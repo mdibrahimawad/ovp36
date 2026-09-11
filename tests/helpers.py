@@ -16,7 +16,7 @@ def case_data(task: str = "extraction", case_id: str = "synthetic-1") -> dict:
             "context_compaction_enabled": True, "has_previous_node": True,
             "is_realtime": False,
         },
-        "voicemail": {"transcript": "Hello?"},
+        "voicemail": {"messages": [{"role": "user", "content": "Hello?"}]},
         "qa": {"scope": "node", "transcript": "[0.0s] user: Hello?",
                "metrics": {}, "node_summary": "Greet the caller.",
                "previous_conversation_summary": ""},

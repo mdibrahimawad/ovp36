@@ -11,3 +11,6 @@ dependencies = ["pydantic>=2.13.4,<3"]
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
+[tool.setuptools.package-data]
+ovp36_benchmark = ["prompts/*.json"]

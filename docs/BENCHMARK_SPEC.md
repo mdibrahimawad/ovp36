@@ -87,7 +87,7 @@ The same benchmark runner MUST be able to target multiple endpoints without code
 - current Qwen baseline endpoint if approved and available
 - future candidate models
 
-Endpoint/model selection should be configuration, not hard-coded task logic.
+Endpoint/model selection should be configuration, not hard-coded task logic. For OVP-34 replay, the request path uses exact captured historical messages; source-aligned task adapters construct requests for curated/adversarial cases.
 
 ## 5. Observed workload priorities from OVP-34
 
@@ -97,7 +97,7 @@ Frozen OVP-34 evidence observed these OOB jobs:
 - runtime context summarization: 56 jobs
 - voicemail detection: 22 jobs
 - post-call QA: 72 jobs
-- QA-support summaries: 52 jobs
+- QA previous-conversation summaries: 52 jobs (the observed QA-support subtype)
 
 Runtime context summarization was the largest measured live-window OOB decode component and therefore gets the deepest live-window quality coverage.
 
@@ -114,7 +114,16 @@ Use three complementary data layers.
 
 ### 6.1 Layer A: frozen OVP-34 replay set
 
-Where technically and legally possible, reconstruct/replay real Olegos-shaped OOB inputs from the frozen OVP-34 evidence.
+The final OVP-34 100-run telemetry has exactly **242 selected OOB observations**, each with captured model-facing input messages and an output: 40 extraction, 56 runtime summary, 22 voicemail, 72 post-call QA, and 52 QA previous-conversation summaries.
+
+Use a private/local export and a separate manifest selecting those canonical observations. Replay the exact captured request message sequence, roles, and content, including already-rendered system messages; do not reconstruct or regenerate prompts from conversational text. Preserve historical outputs and task/span/provenance IDs. Keep raw/private replay material ignored and uncommitted. Missing local exports are availability problems, not a reason to invent replacement requests.
+
+The runner/client design must preserve two distinct request paths:
+
+- OVP-34 historical replay: exact captured model-facing messages -> send directly; DO NOT regenerate with task adapters.
+- Curated/adversarial cases: Olegos-shaped task input -> source-aligned adapter -> generated model-facing messages.
+
+No replay loader is implemented in Stage 2.
 
 Historical baseline output is reference behavior, NOT automatically ground truth.
 
@@ -153,7 +162,7 @@ Each immutable benchmark case SHOULD contain at least:
 
 - id
 - task
-- source: replay | curated | adversarial
+- source: ovp34_replay | curated | adversarial
 - difficulty: easy | normal | hard | adversarial
 - critical: boolean
 - input payload
@@ -208,8 +217,10 @@ The extraction request includes:
 - a system instruction stating that the task is structured extraction
 - a requirement to return only a valid JSON object with requested variables as top-level keys
 - optional node-specific extraction instructions
-- variable name, type, and per-variable hint
+- variable name, source-rendered enum type, and per-variable hint
 - conversation history
+
+The user message begins with exactly two newlines before `Variables to extract:`. Source variable lines use `VariableType.string` (observed in OVP-34), with `VariableType.number` and `VariableType.boolean` implied by current enum formatting. Optional extraction instructions are appended after exactly two newlines to the base system prompt. The frozen SkyAssist instruction and variable hints are recorded verbatim in `SOURCE_AUDIT.md`.
 
 Supported extraction variable types in the current API DTO are:
 
@@ -373,7 +384,7 @@ Current Pipecat classifier expects the model response to contain one of two labe
 - CONVERSATION
 - VOICEMAIL
 
-The default classifier prompt is designed for outbound calls and includes examples of human greetings/responses and voicemail/carrier/business-hours recordings.
+The full default outbound-classifier system prompt is frozen in `SOURCE_AUDIT.md`. Its input is a message context: the historical requests include user, assistant + tool, assistant + tool + user, and user + user sequences after the system instruction. Do not collapse these into a single transcript string.
 
 The detector can also be configured with a long-speech timeout; current API default lookup is 8 seconds.
 
@@ -446,7 +457,7 @@ For per-node QA it constructs:
 - a rolling summary of prior-node conversation
 - the configured QA system prompt
 
-The QA LLM receives a user message containing the current transcript and a rendered system instruction containing the QA context.
+The QA LLM receives a user message containing the current transcript and a rendered system instruction containing the QA context. The full frozen SkyAssist system template is documented in `SOURCE_AUDIT.md`, including its literal double-brace placeholders. Historical replay retains the already-rendered system messages. The Node Purpose section was empty in all 72 historical OVP-34 QA observations; this is not a general production constraint.
 
 The current SkyAssist QA shape expects JSON containing:
 
@@ -605,6 +616,8 @@ Required configuration SHOULD include:
 - max tokens
 - optional seed if supported
 - concurrency
+
+Keep historical/source generation evidence separate from candidate configuration: runtime summary overrides `max_tokens=4000`; historical Qwen voicemail exposes `max_tokens=2048`; service-factory defaults depend on model identity. Do not infer Granite limits of 2048 or 512. Freeze candidate settings before canonical evaluation.
 
 The runner MUST be endpoint-driven so local and GB10/DGX runs use the same benchmark logic.
 
@@ -953,4 +966,3 @@ The research phase is complete when:
 - failure cases are documented
 - a per-job candidate/keep-baseline recommendation is produced
 - claims are limited to what was actually measured
-

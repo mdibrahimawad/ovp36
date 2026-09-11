@@ -159,6 +159,33 @@ class SchemaTests(unittest.TestCase):
             with self.assertRaises(ValidationError):
                 parse_case(data)
 
+    def test_voicemail_preserves_observed_message_role_shapes(self):
+        user = {"role": "user", "content": "Hello?"}
+        assistant = {"role": "assistant", "content": None,
+                     "tool_calls": [{"id": "synthetic-call", "type": "function",
+                                     "function": {"name": "lookup", "arguments": "{}"}}]}
+        tool = {"role": "tool", "content": "Synthetic result", "tool_call_id": "synthetic-call"}
+        for messages in ([user], [assistant, tool], [assistant, tool, user], [user, user]):
+            with self.subTest(roles=[m["role"] for m in messages]):
+                data = case_data("voicemail")
+                data["input"]["messages"] = messages
+                case = parse_case(data)
+                self.assertIsInstance(case.input.messages, tuple)
+                self.assertEqual(case.input.model_dump(mode="json")["messages"],
+                                 type(case).model_validate_json(case.model_dump_json()).input.model_dump(mode="json")["messages"])
+                self.assertEqual([m.role for m in case.input.messages], [m["role"] for m in messages])
+                for original, restored in zip(messages, case.input.messages):
+                    self.assertEqual(restored.content, original["content"])
+                if assistant in messages:
+                    self.assertEqual(case.input.messages[0].tool_calls[0].function.arguments, "{}")
+                    self.assertEqual(case.input.messages[1].tool_call_id, "synthetic-call")
+
+    def test_voicemail_rejects_transcript_only_shape(self):
+        data = case_data("voicemail")
+        data["input"] = {"transcript": "Hello?"}
+        with self.assertRaises(ValidationError):
+            parse_case(data)
+
     def test_opaque_json_numbers_must_be_finite(self):
         for value in (float("inf"), float("-inf"), float("nan")):
             data = case_data("qa")

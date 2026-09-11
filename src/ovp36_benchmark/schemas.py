@@ -204,7 +204,8 @@ class RuntimeContextSummaryInput(StrictModel):
 
 
 class VoicemailInput(StrictModel):
-    transcript: str
+    # Context after the classifier system instruction; preserve message roles.
+    messages: tuple[Message, ...]
     is_partial: bool = False
     is_truncated: bool = False
     long_speech_timeout_seconds: PositiveNumber = 8.0
@@ -518,16 +519,22 @@ class BenchmarkError(StrictModel):
 
 
 class ParseResult(StrictModel):
+    # Production json.loads accepts NaN/Infinity. Preserve them in parser output
+    # without weakening the finite-only case/config/score schemas. Do not let
+    # Pydantic's default JSON serialization silently replace them with null.
+    model_config = ConfigDict(allow_inf_nan=True, ser_json_inf_nan="constants")
+    raw_response: str | None = None
     strict_format_valid: bool
     strict_json_valid: bool | None
-    schema_valid: bool
+    # None means task schema validation has not been performed.
+    schema_valid: bool | None = None
     production_parse_success: bool
     production_usable: bool
     parser_path: Literal[
         "empty", "direct", "fence", "object", "array", "raw_fallback", "label", "text", "none"
     ]
-    parsed_value: JsonValue
-    normalized_value: JsonValue
+    parsed_value: PydanticJsonValue
+    normalized_value: PydanticJsonValue
     diagnostics: tuple[BenchmarkError, ...] = ()
 
 

@@ -16,6 +16,17 @@ The Olegos API repository instructions say `develop` is the integration branch a
 
 This document does not authorize or perform product changes, deployments, MPS edits, or model-server starts.
 
+### 1.1 Final OVP-34 evidence
+
+The higher-fidelity review of the final OVP-34 100-run raw Langfuse telemetry and frozen SkyAssist configuration established exactly **242 selected OOB observations**, each with captured model-facing input messages and an output: 40 extraction, 56 runtime context summary, 22 voicemail, 72 post-call QA, and 52 QA previous-conversation summaries.
+
+There are two fidelity paths:
+
+- **OVP-34 replay:** read a private/local export, select those 242 canonical observations, and preserve the exact captured message sequence, content, roles, historical output, and task/span/provenance IDs. Do not reconstruct prompts from conversational text or regenerate already-rendered system messages.
+- **Curated/adversarial cases:** generate requests through source-aligned task adapters.
+
+Historical outputs remain baseline behavior, not automatic gold. Keep raw/private exports ignored and uncommitted. If a local export is absent or incomplete, report that availability problem; do not fabricate inputs. No replay loader is implemented in Stage 2.
+
 ---
 
 ## 2. What the standalone benchmark should replicate
@@ -44,7 +55,7 @@ The benchmark should not require:
 - production credentials;
 - a live Olegos workflow.
 
-The standalone architecture therefore remains:
+The source-aligned curated/adversarial path is:
 
 ```text
 benchmark case
@@ -100,7 +111,7 @@ Source: `api/services/pipecat/service_factory.py`
 4. calls `create_llm_service_from_provider(...)`;
 5. applies the configured context-window guard where supported.
 
-The factory applies a default per-call max-token cap. Models whose name is treated as reasoning-capable (`gpt-5*`, `o1*`, `qwen3*`, `deepseek-r1*`, `deepseek-v3*`) receive the roomier reasoning cap; other models receive the normal cap. The standalone benchmark must not blindly assume a particular cap for Granite; the final model-server/benchmark configuration must explicitly record the generation limit used for each task.
+The factory applies a default per-call max-token cap. Models whose name is treated as reasoning-capable (`gpt-5*`, `o1*`, `qwen3*`, `deepseek-r1*`, `deepseek-v3*`) receive the roomier reasoning cap; other models receive the normal cap. Runtime context summary explicitly overrides `max_tokens=4000`; the historical Qwen voicemail path exposes `max_tokens=2048`. These are distinct current-source/historical observations, not a universal candidate policy. Because factory defaults depend on model identity, candidate generation limits must be decided and recorded before canonical evaluation. Do not infer Granite limits of 2048 or 512 from the historical Qwen runs.
 
 ### 3.3 Current MPS table
 
@@ -251,32 +262,54 @@ Production base system instruction:
 You are an assistant tasked with extracting structured data from the conversation. Return ONLY a valid JSON object with the requested variables as top-level keys. Do not wrap the JSON in markdown.
 ```
 
-If the workflow node has a custom `extraction_prompt`, it is appended to that system prompt.
+If the workflow node has a custom `extraction_prompt`, it is appended after exactly two newline characters.
 
-The user message contains:
+Current source constructs the user message as:
 
-```text
-Variables to extract:
-- <name> (<type>): <variable hint>
-...
-
-Conversation history:
-<formatted history>
+```python
+user_prompt = (
+    "\n\nVariables to extract:\n"
+    f"{vars_description}"
+    "\n\nConversation history:\n"
+    f"{conversation_history}"
+)
 ```
 
-The benchmark extraction adapter must preserve this structure closely.
+The initial two newlines are part of the model-facing contract. Each variable line uses `f"- {v.name} ({v.type}): {v.prompt}"`. Because `v.type` is a `VariableType` enum, the observed string representation is `VariableType.string`; current source implies `VariableType.number` and `VariableType.boolean` for those types. The DTO types remain string/number/boolean.
+
+The frozen SkyAssist extraction-specific system instruction is:
+
+```text
+Extract the flight search details stated by the caller. Do not infer missing information. If a requested value was not provided, return "unknown".
+```
+
+Frozen SkyAssist variable descriptions are:
+
+```text
+- origin (VariableType.string): Departure city or airport requested by the caller. Return "unknown" if not stated.
+- destination (VariableType.string): Destination city or airport requested by the caller. Return "unknown" if not stated.
+- travel_date (VariableType.string): Travel date requested by the caller. Preserve it as stated by the caller. Return "unknown" if not stated.
+```
+
+The benchmark must preserve this text, including the leading user-message newlines and two-newline system append. Stage 2 freezes the contracts; extraction history formatting belongs to the later adapter. Historical replay uses the captured messages unchanged.
 
 ## 4.7 Production-like output parsing
 
 Production calls `parse_llm_json(raw_response)`.
 
-That parser tries, in order:
+For None/empty/blank input, return `{}`. Otherwise use `content = raw_content.strip()` and try, in order:
 
-1. direct JSON parse;
-2. JSON inside a Markdown code block;
-3. the first balanced JSON object embedded in surrounding text;
-4. the first balanced JSON array embedded in surrounding text;
-5. fallback `{"raw": <original response>}`.
+1. `json.loads(content)`, accepting direct success only for a dict/list;
+2. the FIRST `re.search` match of `r"```(?:json)?\s*([\s\S]*?)\s*```"`, stripping and parsing the captured contents, accepting only a dict/list;
+3. a balanced object starting at the FIRST `{`;
+4. a balanced array starting at the FIRST `[`;
+5. fallback `{"raw": original_raw_response}`, preserving the original unstripped response.
+
+Every production JSON parsing branch accepts only a dict/list. An invalid or scalar first fence proceeds to object scanning and then array scanning over the full stripped content; it does not trigger another fence search. If neither succeeds, return raw fallback. The regex only treats lowercase `json` as the optional label, rather than stripping arbitrary language names.
+
+Object/array scanning follows production ordering literally: consume a pending escape; otherwise a backslash sets the escape flag and skips that character; otherwise a double quote toggles string state; skip characters inside strings; then count opening/closing delimiters. Backslashes escape the next character even outside a string in malformed input. A malformed first balanced candidate does not cause a search for a second candidate of the same kind.
+
+Production uses Python `json.loads`, which can accept non-finite values such as NaN or Infinity inside dict/list results. Preserve that production result and parser path; do not replace it with raw fallback because a benchmark schema prefers finite JSON. Strict RFC-format assessment remains independent and may reject those constants. Parser-result serialization must preserve these values without silently converting them to null; future standards-compliant result export needs an explicit lossless encoding policy.
 
 The extraction manager returns an empty dict for a `None` response.
 
@@ -413,15 +446,25 @@ After Olegos's six-or-fewer-message skip check, the underlying Pipecat utility s
 2. Preserve the last `min_messages_to_keep` messages outside the proposed summarization range. Olegos uses two.
 3. If an unresolved function/tool-call sequence occurs inside that range, stop before the earliest unresolved function call.
 
-The selected messages are formatted into a transcript:
+The selected messages are formatted into a transcript, skipping `LLMSpecificMessage` objects. For each normal message:
 
+- use `msg.get("role", "unknown")`;
 - retain string content;
-- retain text items from list content;
-- skip `LLMSpecificMessage` objects;
-- uppercase ordinary message roles;
-- represent tool calls as `TOOL_CALL: name(arguments)`;
-- represent tool results as `TOOL_RESULT[tool_call_id]: text`;
-- separate entries with blank lines.
+- for list content, keep items whose `type == "text"` and join their text with ONE space;
+- otherwise convert content using `str(...)`;
+- when text is non-empty, append `{ROLE_UPPERCASE}: {text}`;
+- independently append each tool call as `TOOL_CALL: {name}({arguments})`;
+- if the role is `tool`, ALSO append `TOOL_RESULT[{tool_call_id}]: {text}`.
+
+Entries are joined with TWO newlines. A tool-role message with content can therefore produce both entries, as observed in historical OVP-34 runtime-summary requests:
+
+```text
+TOOL: {"status": "done"}
+
+TOOL_RESULT[call_id]: {"status": "done"}
+```
+
+Do not deduplicate these entries or apply extraction's transition-tool omission to runtime summaries. This is the source contract for a future adapter; Stage 2 does not implement this formatter.
 
 The formatted transcript is sent using the `Conversation history:` wrapper shown above.
 
@@ -541,20 +584,40 @@ The standalone text benchmark cannot reproduce real audio timing, but its case m
 
 ## 6.5 Prompt contract
 
-Pipecat's default classifier prompt describes two classes:
+The complete current default classifier system prompt is frozen exactly:
 
 ```text
-CONVERSATION
-VOICEMAIL
-```
+You are a voicemail detection classifier for an OUTBOUND calling system. A bot has called a phone number and you need to determine if a human answered or if the call went to voicemail based on the provided text.
 
-and gives representative human-answer and automated-system patterns.
+HUMAN ANSWERED - LIVE CONVERSATION (respond "CONVERSATION"):
+- Personal greetings: "Hello?", "Hi", "Yeah?", "John speaking"
+- Interactive responses: "Who is this?", "What do you want?", "Can I help you?"
+- Conversational tone expecting back-and-forth dialogue
+- Questions directed at the caller: "Hello? Anyone there?"
+- Informal responses: "Yep", "What's up?", "Speaking"
+- Natural, spontaneous speech patterns
+- Immediate acknowledgment of the call
 
-Required response instruction:
+VOICEMAIL SYSTEM (respond "VOICEMAIL"):
+- Automated voicemail greetings: "Hi, you've reached [name], please leave a message"
+- Phone carrier messages: "The number you have dialed is not in service", "Please leave a message", "All circuits are busy"
+- Professional voicemail: "This is [name], I'm not available right now"
+- Instructions about leaving messages: "leave a message", "leave your name and number"
+- References to callback or messaging: "call me back", "I'll get back to you"
+- Carrier system messages: "mailbox is full", "has not been set up"
+- Business hours messages: "our office is currently closed"
 
-```text
 Respond with ONLY "CONVERSATION" if a person answered, or "VOICEMAIL" if it's voicemail/recording.
 ```
+
+The 22 historical OVP-34 requests show these role sequences after the system instruction:
+
+- user;
+- assistant + tool;
+- assistant + tool + user;
+- user + user.
+
+Classifier input is therefore a message context, not only a transcript string. `VoicemailInput.messages` preserves these roles and content. A future curated adapter prepends the frozen system instruction. Historical replay sends the full captured request directly, including its system message, without passing through a task adapter or stripping/reconstructing messages. Do not recreate Pipecat's context aggregator.
 
 Custom prompts are allowed; the implementation warns if they do not contain both required classification keywords.
 
@@ -666,7 +729,58 @@ The model then receives a user message:
 
 The standalone QA adapter should reproduce these four system-prompt inputs and the user-message shape.
 
-## 7.5 Frozen SkyAssist QA schema
+## 7.5 Frozen SkyAssist QA template and schema
+
+The frozen OVP-34 SkyAssist system template is complete and source-known. Preserve these literal double-brace placeholders; actual Olegos template substitution belongs to the later QA adapter:
+
+```text
+You are a QA analyst evaluating a specific segment of a voice AI conversation.
+
+## Node Purpose
+{{node_summary}}
+
+## Previous Conversation Context (For start of conversation, previous conversation summary can be empty.)
+{{previous_conversation_summary}}
+
+## Tags to evaluate
+
+Examine the conversation carefully and identify which of the following tags apply:
+
+- UNCLEAR_CONVERSATION - The conversation is not coherent or clear, messages don't connect logically
+- ASSISTANT_IN_LOOP - The assistant asks the same question multiple times or gets stuck repeating itself
+- ASSISTANT_REPLY_IMPROPER - The assistant did not reply properly to the user's question/query or seems confused by what the user said
+- USER_FRUSTRATED - The user seems angry, frustrated, or is complaining about something in the call
+- USER_NOT_UNDERSTANDING - The user explicitly says they don't understand or repeatedly asks for clarification
+- HEARING_ISSUES - Either party can't hear the other ("hello?", "are you there?", "can you hear me?")
+- DEAD_AIR - Unusually long silences in the conversation (use the timestamps to judge)
+- USER_REQUESTING_FEATURE - The user asks for something the assistant can't fulfill
+- ASSISTANT_LACKS_EMPATHY - The assistant ignores the user's personal situation or emotional state and continues pitching or pushing the agenda.
+- USER_DETECTS_AI - The user suspects or identifies that they are talking to an AI/robot/bot rather than a real human.
+
+## Call metrics (pre-computed)
+
+Use these alongside the transcript for your analysis:
+{{metrics}}
+
+## Output format
+
+Return ONLY a valid JSON object (no markdown):
+{
+    "tags": [
+        {
+            "tag": "TAG_NAME",
+            "reason": "Short reason with evidence from the transcript"
+        }
+    ],
+    "overall_sentiment": "positive|neutral|negative",
+    "call_quality_score": <1-10>,
+    "summary": "1-2 sentence summary of this segment"
+}
+
+If no tags apply, return an empty tags list. Always provide sentiment, score, and summary.
+```
+
+Historical replay uses the already-rendered system message captured by telemetry, not this template rendered again. In all **72 historical OVP-34 QA observations**, the rendered `Node Purpose` section was empty. This is an observed property of that dataset, not a universal production rule: current source supports node summaries.
 
 The frozen QA configuration asks the evaluator to consider tags including:
 
@@ -795,18 +909,22 @@ Source:
 api/services/workflow/qa/node_summary.py
 ```
 
-System prompt asks for a concise 2-4 sentence description of:
+Exact `NODE_SUMMARY_SYSTEM_PROMPT`:
 
-- the script purpose;
-- what the agent should accomplish;
-- key behaviors/nuances relevant to QA.
+```text
+You are analyzing a voice AI agent script. This is only a part of a larger script. Produce a concise summary (2-4 sentences) describing this script purpose, what the agent should accomplish, and key behaviors. We will be using this summary to do a QA on the conversation that the agent would do with someone so try to capture the nuances of the script as much as possible.
+```
 
-The user message is built from:
+The exact node-description user formatter is source-known:
 
-- node name;
-- node agent prompt when present;
-- available custom tools with descriptions;
-- outgoing workflow edges represented as available transition tools, including their conditions.
+1. Start with `Node name: {node_name}`.
+2. If an agent prompt exists, append a section `Agent prompt:\n{agent_prompt}`.
+3. Collect custom tools as `- {tool_name}`, or `- {tool_name}: {description}` when a description exists.
+4. Collect outgoing edges as `- {label}`, or `- {label}: {condition}` when a condition exists.
+5. If at least one tool/edge exists, append `Available tools:\n` followed by the items, one per line.
+6. Join the major sections with ONE newline.
+
+Fixtures provide already-resolved inputs; database/tool fetching is not part of the benchmark. Formatter implementation is deferred to the adapter stage, not missing source knowledge.
 
 These summaries are generated once per workflow definition when absent and then cached in `node_summaries`. They are therefore real QA LLM work but have different execution frequency from per-run prior-conversation summaries.
 
@@ -909,14 +1027,14 @@ Quality decisions should be primarily candidate-vs-gold, with baseline-vs-gold a
 
 # 10. OVP-34 workload shape the benchmark should reflect
 
-The frozen OVP-34 evidence identified these named OOB groups:
+The final OVP-34 dataset contains exactly 242 selected OOB observations, all with captured model-facing messages and output:
 
 ```text
 variable extraction          40 jobs
 runtime context summary      56 jobs
 voicemail detector           22 jobs
 post-call QA                 72 jobs
-QA-support summaries         52 jobs
+QA previous-conversation     52 jobs
 ```
 
 Context summarization is the highest-priority live-window workload for deep coverage. Post-call QA plus QA-support summaries form a large post-call pool and must still be isolated from the live dialogue engine in the eventual OVP-36 solution.
@@ -1081,7 +1199,7 @@ This traceability is what lets us claim the benchmark is Olegos-shaped without i
 This audit establishes the product-facing contracts. The next design artifacts must still freeze:
 
 1. exact curated case count per task and difficulty bucket;
-2. which frozen OVP-34 requests can be replayed safely and completely;
+2. access to and validation of the private/local export of the 242 captured OVP-34 requests and outputs;
 3. gold-label annotation process;
 4. task-specific scoring formulas and thresholds;
 5. baseline endpoint availability/approval;

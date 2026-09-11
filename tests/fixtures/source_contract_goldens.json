@@ -1,0 +1,22 @@
+{
+  "voicemail": "You are a voicemail detection classifier for an OUTBOUND calling system. A bot has called a phone number and you need to determine if a human answered or if the call went to voicemail based on the provided text.\n\nHUMAN ANSWERED - LIVE CONVERSATION (respond \"CONVERSATION\"):\n- Personal greetings: \"Hello?\", \"Hi\", \"Yeah?\", \"John speaking\"\n- Interactive responses: \"Who is this?\", \"What do you want?\", \"Can I help you?\"\n- Conversational tone expecting back-and-forth dialogue\n- Questions directed at the caller: \"Hello? Anyone there?\"\n- Informal responses: \"Yep\", \"What's up?\", \"Speaking\"\n- Natural, spontaneous speech patterns\n- Immediate acknowledgment of the call\n\nVOICEMAIL SYSTEM (respond \"VOICEMAIL\"):\n- Automated voicemail greetings: \"Hi, you've reached [name], please leave a message\"\n- Phone carrier messages: \"The number you have dialed is not in service\", \"Please leave a message\", \"All circuits are busy\"\n- Professional voicemail: \"This is [name], I'm not available right now\"\n- Instructions about leaving messages: \"leave a message\", \"leave your name and number\"\n- References to callback or messaging: \"call me back\", \"I'll get back to you\"\n- Carrier system messages: \"mailbox is full\", \"has not been set up\"\n- Business hours messages: \"our office is currently closed\"\n\nRespond with ONLY \"CONVERSATION\" if a person answered, or \"VOICEMAIL\" if it's voicemail/recording.",
+  "qa": "You are a QA analyst evaluating a specific segment of a voice AI conversation.\n\n## Node Purpose\n{{node_summary}}\n\n## Previous Conversation Context (For start of conversation, previous conversation summary can be empty.)\n{{previous_conversation_summary}}\n\n## Tags to evaluate\n\nExamine the conversation carefully and identify which of the following tags apply:\n\n- UNCLEAR_CONVERSATION - The conversation is not coherent or clear, messages don't connect logically\n- ASSISTANT_IN_LOOP - The assistant asks the same question multiple times or gets stuck repeating itself\n- ASSISTANT_REPLY_IMPROPER - The assistant did not reply properly to the user's question/query or seems confused by what the user said\n- USER_FRUSTRATED - The user seems angry, frustrated, or is complaining about something in the call\n- USER_NOT_UNDERSTANDING - The user explicitly says they don't understand or repeatedly asks for clarification\n- HEARING_ISSUES - Either party can't hear the other (\"hello?\", \"are you there?\", \"can you hear me?\")\n- DEAD_AIR - Unusually long silences in the conversation (use the timestamps to judge)\n- USER_REQUESTING_FEATURE - The user asks for something the assistant can't fulfill\n- ASSISTANT_LACKS_EMPATHY - The assistant ignores the user's personal situation or emotional state and continues pitching or pushing the agenda.\n- USER_DETECTS_AI - The user suspects or identifies that they are talking to an AI/robot/bot rather than a real human.\n\n## Call metrics (pre-computed)\n\nUse these alongside the transcript for your analysis:\n{{metrics}}\n\n## Output format\n\nReturn ONLY a valid JSON object (no markdown):\n{\n    \"tags\": [\n        {\n            \"tag\": \"TAG_NAME\",\n            \"reason\": \"Short reason with evidence from the transcript\"\n        }\n    ],\n    \"overall_sentiment\": \"positive|neutral|negative\",\n    \"call_quality_score\": <1-10>,\n    \"summary\": \"1-2 sentence summary of this segment\"\n}\n\nIf no tags apply, return an empty tags list. Always provide sentiment, score, and summary.",
+  "extraction": "Extract the flight search details stated by the caller. Do not infer missing information. If a requested value was not provided, return \"unknown\".",
+  "variables": [
+    {
+      "name": "origin",
+      "type": "string",
+      "hint": "Departure city or airport requested by the caller. Return \"unknown\" if not stated."
+    },
+    {
+      "name": "destination",
+      "type": "string",
+      "hint": "Destination city or airport requested by the caller. Return \"unknown\" if not stated."
+    },
+    {
+      "name": "travel_date",
+      "type": "string",
+      "hint": "Travel date requested by the caller. Preserve it as stated by the caller. Return \"unknown\" if not stated."
+    }
+  ]
+}

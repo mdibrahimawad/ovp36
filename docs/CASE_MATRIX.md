@@ -15,7 +15,7 @@ Each case will eventually become an immutable data fixture. Model outputs and sc
 The matrix has two complementary parts:
 
 1. **Curated/adversarial cases** — explicit human-defined expected behavior.
-2. **OVP-34 replay cases** — reconstructed real Olegos-shaped inputs where available. Historical Qwen output is baseline behavior, not automatically ground truth.
+2. **OVP-34 replay cases** — exact captured model-facing requests and outputs from the final OVP-34 telemetry. All 242 selected observations have both. Historical Qwen output is baseline behavior, not automatically ground truth; curated/adversarial requests instead come from source-aligned adapters.
 
 ## 2. Common case fields
 
@@ -57,7 +57,7 @@ Every result record should include:
 Production fidelity requirements:
 
 - use the Olegos-shaped extraction prompt;
-- preserve variable name/type/hint;
+- preserve variable name/type/hint, the two leading user-message newlines, and source enum spellings (`VariableType.string`, with number/boolean counterparts);
 - support only current production types: string, number, boolean;
 - reproduce current conversation/tool normalization where applicable;
 - score strict JSON separately from production-parser compatibility;
@@ -166,6 +166,7 @@ Primary context-summary metrics:
 Production fidelity requirements:
 
 - expected classes are `CONVERSATION` and `VOICEMAIL`;
+- use the full frozen classifier prompt and preserve source-shaped message contexts, including assistant/tool messages;
 - score exact-label compliance separately from production decision behavior;
 - production checks for `CONVERSATION` first, then `VOICEMAIL`;
 - a response containing both words is therefore production-decided as `CONVERSATION`;
@@ -317,27 +318,30 @@ Primary QA-support metrics:
 
 # 8. OVP-34 replay matrix
 
-The replay layer should be built as a separate manifest so it can expand as reconstructed inputs become available.
+Use a separate manifest selecting the 242 canonical OOB observations from a private/local export of the final OVP-34 100-run telemetry. Every selected observation has captured model-facing input messages and an output.
 
-Target historical workload coverage:
-
-| Replay family | Historical observed jobs | Desired replay target |
+| Replay family | Captured observations | Exact-message replay target |
 |---|---:|---:|
-| Variable extraction | 40 | Up to 40 reconstructable inputs |
-| Runtime context summarization | 56 | Up to 56 reconstructable inputs |
-| Voicemail detection | 22 | Up to 22 reconstructable inputs |
-| Post-call QA | 72 | Up to 72 reconstructable inputs |
-| QA-support summaries | 52 | Up to 52 reconstructable inputs |
-| **Total** | **242** | **Up to 242** |
+| Variable extraction | 40 | 40 |
+| Runtime context summarization | 56 | 56 |
+| Voicemail detection | 22 | 22 |
+| Post-call QA | 72 | 72 |
+| QA previous-conversation summaries | 52 | 52 |
+| **Total** | **242** | **242** |
+
+The 52 summary observations are previous-conversation summaries, not node/script summaries. The Node Purpose section was empty in the 72 historical QA observations; current production still supports node summaries.
 
 Replay requirements:
 
-- preserve provenance/run identifiers in local benchmark metadata where safe;
-- do not treat historical Qwen output as automatic gold;
-- store historical baseline output separately;
+- preserve exact captured message order, roles, content, and already-rendered system messages; do not reconstruct prompts from conversation text;
+- preserve task/span/provenance/run IDs in private/local metadata;
+- preserve exact historical output separately as baseline behavior, never automatic gold;
 - annotate gold independently when practical;
-- if an original model-facing request cannot be reconstructed faithfully, mark it `non_reconstructable` instead of inventing missing content;
+- keep raw/private exports ignored and uncommitted;
+- report unavailable/incomplete local exports explicitly rather than fabricating requests;
 - never mix replay cases with curated cases in aggregate reporting without showing both breakdowns.
+
+Replay loading is a later stage. Curated/adversarial cases use source-aligned adapters; replay uses the captured historical requests.
 
 ---
 
@@ -382,7 +386,7 @@ Total initial curated/adversarial suite:
 
 **126 cases**
 
-This is intentionally separate from the up-to-242 OVP-34 replay cases.
+This is intentionally separate from the 242 captured OVP-34 replay observations.
 
 The suite can grow after the first implementation, but these IDs and their intended semantics should not be silently repurposed.
 
