@@ -1,93 +1,116 @@
-# ovp36-oob-model-benchmark
+# OVP-36 OOB model benchmark
 
+Standalone research benchmark. **Stage 1 only:** strict schemas, TOML
+configuration, and read-only JSONL dataset loading/validation. Model execution,
+adapters, parsers, scoring, reports, and serving are not implemented yet.
 
+The requirements are `docs/BENCHMARK_SPEC.md`, `docs/SOURCE_AUDIT.md`, and
+`docs/CASE_MATRIX.md`, together with the approved source corrections from plan
+review. Those documents have not been modified in this stage.
 
-## Getting started
+## Development
 
-To make it easy for you to get started with GitLab, here's a list of recommended next steps.
+Python **>=3.12,<3.13** is required. With uv installed:
 
-Already a pro? Just edit this README.md and make it your own. Want to make it easy? [Use the template at the bottom](#editing-this-readme)!
-
-## Add your files
-
-* [Create](https://docs.gitlab.com/user/project/repository/web_editor/#create-a-file) or [upload](https://docs.gitlab.com/user/project/repository/web_editor/#upload-a-file) files
-* [Add files using the command line](https://docs.gitlab.com/topics/git/add_files/#add-files-to-a-git-repository) or push an existing Git repository with the following command:
-
-```
-cd existing_repo
-git remote add origin https://git.polynome.ai/development/olegos/research/ovp36-oob-model-benchmark.git
-git branch -M master
-git push -uf origin master
+```sh
+uv sync --locked
+.venv/bin/python -m unittest discover -s tests -v
 ```
 
-## Integrate with your tools
+Without uv, install this package using Python 3.12 in an isolated environment:
 
-* [Set up project integrations](https://git.polynome.ai/development/olegos/research/ovp36-oob-model-benchmark/-/settings/integrations)
+```sh
+python3.12 -m venv .venv
+.venv/bin/python -m pip install -e .
+.venv/bin/python -m unittest discover -s tests -v
+```
 
-## Collaborate with your team
+The uv lockfile pins runtime dependencies; the pip alternative resolves the
+version range from `pyproject.toml`. Tests use synthetic cases in temporary
+directories and need no network, model, credentials, or external services.
 
-* [Invite team members and collaborators](https://docs.gitlab.com/user/project/members/)
-* [Create a new merge request](https://docs.gitlab.com/user/project/merge_requests/creating_merge_requests/)
-* [Automatically close issues from merge requests](https://docs.gitlab.com/user/project/issues/managing_issues/#closing-issues-automatically)
-* [Enable merge request approvals](https://docs.gitlab.com/user/project/merge_requests/approvals/)
-* [Set auto-merge](https://docs.gitlab.com/user/project/merge_requests/auto_merge/)
+## Data contracts
 
-## Test and Deploy
+`schemas.py` defines all six task IDs and their typed input/gold models. It also
+defines explicit `model`, `adapter_control`, `response_contract`, and
+`transport_contract` exercises. Contract assertions cannot substitute for gold
+in model exercises. Result foundation schemas require an exercise identity;
+aggregation and execution are deferred.
 
-Use the built-in continuous integration in GitLab.
+- Models reject unknown fields and incorrect primitive types. JSON arrays become
+  tuples; JSON enum strings become enum values. Direct Python construction uses
+  typed enums and tuples under Pydantic strict validation.
+- Models are frozen. Opaque JSON dictionaries, such as QA metrics, are not deeply
+  frozen and must be treated as read-only. Dataset operations never mutate them.
+- Only `ovp34_replay` cases may set `expected` to null. This rule also requires
+  explicit expected assertions for curated/adversarial control cases.
+- Extraction types are string, number, and boolean. Known gold must match the
+  declared type; every missing field needs an explicit missing-value policy.
+- The three summary gold types share one fact-annotation schema. Named categories
+  reference required-fact IDs; correction pairs reference old/new facts.
+- QA gold uses a score target or an ordered acceptable range. Tags remain strings
+  so a later frozen prompt contract can validate its vocabulary.
+- Evidence offsets are half-open character spans. Structural validation checks
+  pointers/offsets; resolving them against inputs belongs to fixture validation
+  when actual curated fixtures are added.
 
-* [Get started with GitLab CI/CD](https://docs.gitlab.com/ci/quick_start/)
-* [Analyze your code for known vulnerabilities with Static Application Security Testing (SAST)](https://docs.gitlab.com/user/application_security/sast/)
-* [Deploy to Kubernetes, Amazon EC2, or Amazon ECS using Auto Deploy](https://docs.gitlab.com/topics/autodevops/requirements/)
-* [Use pull-based deployments for improved Kubernetes management](https://docs.gitlab.com/user/clusters/agent/)
-* [Set up protected environments](https://docs.gitlab.com/ci/environments/protected_environments/)
+`load_cases(path_or_paths)` reads UTF-8 JSONL into a tuple of cases. It rejects
+invalid/blank lines, duplicate object keys, non-standard numeric constants,
+invalid schemas, and duplicate IDs, including across files. Errors identify the
+source file and line without echoing the raw fixture.
 
-***
+`select_cases(...)` intersects task/source/difficulty/critical/exercise filters;
+tag filtering requires all supplied tags. No filter means unrestricted; an empty
+task/source/difficulty/exercise selection matches no cases.
 
-# Editing this README
+`hash_dataset(cases)` hashes all normalized case content in sorted ID order.
+Whitespace, JSON object key order, and file ordering do not affect it. Message
+order, gold, exercise kind, and provenance do. It is a dataset content hash, not
+a future execution-order or prompt-artifact hash.
 
-When you're ready to make this README your own, just edit this file and use the handy template below (or feel free to structure it however you want - this is just a starting point!). Thanks to [makeareadme.com](https://www.makeareadme.com/) for this template.
+`validate_matrix_coverage(cases, expected_ids)` checks caller-supplied IDs and
+raises on missing/unexpected IDs. `require_complete=False` returns gaps for
+partial-suite development. No curated or replay data is created in Stage 1.
 
-## Suggestions for a good README
+## Configuration
 
-Every project is different, so consider which of these sections apply to yours. The sections used in the template are suggestions for most open source projects. Also keep in mind that while a README can be too long and detailed, too long is better than too short. If you think your README is too long, consider utilizing another form of documentation rather than cutting out information.
+This example describes the schema; there is no executable benchmark runner yet:
 
-## Name
-Choose a self-explaining name for your project.
+```toml
+experiment_label = "local-development"
+evaluation = "exploratory" # or "canonical"
+timeout_seconds = 30.0
+concurrency = 1
+repetitions = 1
 
-## Description
-Let people know what your project can do specifically. Provide context and add a link to any reference visitors might be unfamiliar with. A list of Features or a Background subsection can also be added here. If there are alternatives to your project, this is a good place to list differentiating factors.
+[endpoint]
+alias = "local"
+base_url_env = "OVP36_BASE_URL"
+model_env = "OVP36_MODEL"
+# api_key_env = "OVP36_API_KEY" # omit for endpoints without authentication
 
-## Badges
-On some READMEs, you may see small images that convey metadata, such as whether or not all the tests are passing for the project. You can use Shields to add some to your README. Many services also have instructions for adding a badge.
+[generation]
+temperature = 0.0
+max_tokens = 4000
+top_p = 1.0
+# seed = 7
+```
 
-## Visuals
-Depending on what you are making, it can be a good idea to include screenshots or even a video (you'll frequently see GIFs rather than actual videos). Tools like ttygif can help, but check out Asciinema for a more sophisticated method.
+`load_config(path)` uses `tomllib` without reading environment values.
+`resolve_endpoint(config.endpoint)` resolves only named variables. A missing or
+blank referenced variable raises an error. Literal `base_url`/`model` may be used
+instead of their environment references, but not alongside them.
 
-## Installation
-Within a particular ecosystem, there may be a common way of installing things, such as using Yarn, NuGet, or Homebrew. However, consider the possibility that whoever is reading your README is a novice and would like more guidance. Listing specific steps helps remove ambiguity and gets people to using your project as quickly as possible. If it only runs in a specific context like a particular programming language version or operating system or has dependencies that have to be installed manually, also add a Requirements subsection.
+API keys can only be supplied through environment references. URLs containing
+userinfo, query parameters, or fragments are rejected. Resolved endpoint values
+are excluded from ordinary serialization and repr; `redact_config(config)` saves
+the unresolved configuration. Keep local configuration and secrets out of Git.
 
-## Usage
-Use examples liberally, and show the expected output if you can. It's helpful to have inline the smallest example of usage that you can demonstrate, while providing links to more sophisticated examples if they are too long to reasonably include in the README.
+The generation limit is explicit for every configuration. The approved runtime
+summary contract uses **max_tokens=4000** and a **30-second timeout**; future
+task-aware configuration/adapters will enforce these canonical settings. This
+Stage 1 schema is task-neutral and does not infer a task from those numbers.
 
-## Support
-Tell people where they can go to for help. It can be any combination of an issue tracker, a chat room, an email address, etc.
-
-## Roadmap
-If you have ideas for releases in the future, it is a good idea to list them in the README.
-
-## Contributing
-State if you are open to contributions and what your requirements are for accepting them.
-
-For people who want to make changes to your project, it's helpful to have some documentation on how to get started. Perhaps there is a script that they should run or some environment variables that they need to set. Make these steps explicit. These instructions could also be useful to your future self.
-
-You can also document commands to lint the code or run tests. These steps help to ensure high code quality and reduce the likelihood that the changes inadvertently break something. Having instructions for running tests is especially helpful if it requires external setup, such as starting a Selenium server for testing in a browser.
-
-## Authors and acknowledgment
-Show your appreciation to those who have contributed to the project.
-
-## License
-For open source projects, say how it is licensed.
-
-## Project status
-If you have run out of energy or time for your project, put a note at the top of the README saying that development has slowed down or stopped completely. Someone may choose to fork your project or volunteer to step in as a maintainer or owner, allowing your project to keep going. You can also make an explicit request for maintainers.
+No Granite checkpoint, quantization, or serving runtime is selected. Their
+configuration remains a decision before local serving. GB10/DGX access and
+hardware measurements follow local validation in a later stage.

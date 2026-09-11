@@ -1,0 +1,956 @@
+# OVP-36 OOB Model Benchmark Specification
+
+Status: Draft v0.1
+Owner: Ibrahim Awad
+Purpose: Research-only model evaluation for OVP-36 before any Olegos product integration
+
+## 1. Objective
+
+Build a standalone, reproducible benchmark and test server that evaluates whether IBM Granite can safely handle one or more Olegos out-of-band (OOB) LLM workloads with quality comparable to the current dialogue-model baseline and, later, with better serving characteristics on approved GB10/DGX research hardware.
+
+The benchmark MUST answer two separate questions:
+
+1. Quality gate: can the candidate model perform each OOB job correctly and in a production-compatible output format?
+2. Hardware gate: on approved GB10/DGX research hardware, is the candidate materially attractive in latency, throughput, concurrency, and memory use?
+
+Passing one gate does not imply passing the other.
+
+The benchmark MUST make a per-job decision. It MUST NOT assume that one replacement model has to serve every OOB workload.
+
+## 2. Scope
+
+In scope:
+
+- variable extraction
+- runtime context summarization / context compaction
+- voicemail detection / classification
+- post-call QA
+- QA-support conversation summaries
+- QA node/script summaries where relevant to the same QA model path
+- production-like prompt construction for each job
+- production-like parsing and validation
+- baseline-vs-candidate comparison
+- local functional and quality testing
+- later GB10/DGX performance testing
+- reproducible result capture and reporting
+
+Out of scope for this research repo:
+
+- modifying olegos-api
+- modifying olegos-mps
+- modifying olegos-pipecat
+- changing production tier tables
+- changing user-facing configuration
+- deploying into production or shared Olegos infrastructure
+- starting model servers on shared/company GPU infrastructure without operator approval
+- proving end-to-end OVP-36 routing/isolation inside Olegos
+- claiming capacity improvement from token-share percentages alone
+
+## 3. Source basis and fidelity rule
+
+This specification is based on the current source snapshots supplied for:
+
+- olegos-api develop
+- olegos-mps develop
+- olegos-pipecat develop
+- olegos-docs develop
+- frozen OVP-34 evidence and benchmark artifacts
+
+Before product integration, source assumptions MUST be revalidated against current origin/develop because the product repositories move quickly.
+
+Core fidelity rule:
+
+> Reproduce the model-facing OOB contract, not the entire Olegos runtime.
+
+The benchmark MUST emulate what the OOB LLM sees and what Olegos expects back. It SHOULD NOT reproduce workflow execution, telephony, STT, TTS, databases, Redis, Langfuse, MPS, or the live dialogue pipeline unless one of those components is strictly necessary to preserve the model-facing contract.
+
+## 4. Why a standalone OOB laboratory
+
+The research architecture should isolate model quality and serving behavior from unrelated product infrastructure.
+
+Conceptual flow:
+
+benchmark case
+-> task adapter
+-> OpenAI-compatible model client
+-> standalone model server
+-> raw response
+-> production-like parser
+-> task-specific scorer
+-> result record
+-> aggregate report
+
+The same benchmark runner MUST be able to target multiple endpoints without code changes, for example:
+
+- local Granite server
+- Granite on approved GB10/DGX research hardware
+- current Qwen baseline endpoint if approved and available
+- future candidate models
+
+Endpoint/model selection should be configuration, not hard-coded task logic.
+
+## 5. Observed workload priorities from OVP-34
+
+Frozen OVP-34 evidence observed these OOB jobs:
+
+- variable extraction: 40 jobs
+- runtime context summarization: 56 jobs
+- voicemail detection: 22 jobs
+- post-call QA: 72 jobs
+- QA-support summaries: 52 jobs
+
+Runtime context summarization was the largest measured live-window OOB decode component and therefore gets the deepest live-window quality coverage.
+
+The benchmark MUST preserve the distinction between:
+
+- runtime context summarization: llm-context-summarization
+- QA rolling summaries: conversation-summary-before-<node>
+
+They are separate OOB operations with different purposes and prompts.
+
+## 6. Dataset strategy
+
+Use three complementary data layers.
+
+### 6.1 Layer A: frozen OVP-34 replay set
+
+Where technically and legally possible, reconstruct/replay real Olegos-shaped OOB inputs from the frozen OVP-34 evidence.
+
+Historical baseline output is reference behavior, NOT automatically ground truth.
+
+For each replay case, distinguish:
+
+- baseline_output: output produced by the current/baseline model
+- gold/expected: independently defined expected behavior where annotation is possible
+- candidate_output: output produced by Granite
+
+### 6.2 Layer B: curated correctness set
+
+Create deterministic, human-reviewable scenarios with explicit expected outputs or scoring annotations.
+
+This set is the primary source for objective accuracy claims.
+
+### 6.3 Layer C: adversarial/edge set
+
+Create difficult cases specifically intended to expose production-relevant failures, including:
+
+- missing information
+- user corrections
+- contradictions
+- irrelevant details
+- long contexts
+- ambiguous wording
+- tool responses
+- repeated facts
+- misleading keywords
+- malformed-looking content
+- output-format pressure
+- facts appearing only once or far back in context
+
+## 7. Common case schema
+
+Each immutable benchmark case SHOULD contain at least:
+
+- id
+- task
+- source: replay | curated | adversarial
+- difficulty: easy | normal | hard | adversarial
+- critical: boolean
+- input payload
+- expected/gold annotations
+- tags describing the scenario
+- notes/rationale
+- source provenance where applicable
+
+Execution results MUST be stored separately from cases and SHOULD contain at least:
+
+- run_id
+- case_id
+- timestamp
+- model identifier
+- endpoint identifier/alias
+- model/server configuration
+- raw output
+- parsed output
+- prompt/input token count when reported
+- completion/output token count when reported
+- total token count when reported
+- request latency
+- time to first token when measurable
+- decode duration / tokens-per-second when measurable
+- parser status
+- task-specific scores
+- error/timeout status
+- retry count
+
+Input cases MUST NOT be overwritten by results.
+
+## 8. Variable extraction contract
+
+### 8.1 Current production-shaped behavior
+
+Current API source builds a normalized conversation history containing:
+
+- assistant messages
+- user messages
+- selected tool responses
+
+Tool-response handling currently:
+
+- excludes transition responses matching {"status": "done"}
+- prefers a JSON object's `data` field when present
+- otherwise strips wrapper keys such as status/status_code
+- truncates a single tool response above 2000 characters
+- labels retained tool responses with the tool name
+
+The extraction request includes:
+
+- a system instruction stating that the task is structured extraction
+- a requirement to return only a valid JSON object with requested variables as top-level keys
+- optional node-specific extraction instructions
+- variable name, type, and per-variable hint
+- conversation history
+
+Supported extraction variable types in the current API DTO are:
+
+- string
+- number
+- boolean
+
+Production parsing is tolerant: the API parser first attempts strict JSON, then handles markdown code blocks, then attempts to extract a JSON object/array from surrounding text. If parsing fails it returns a raw fallback.
+
+### 8.2 Extraction benchmark families
+
+At minimum cover:
+
+- all fields present
+- one field missing
+- multiple fields missing
+- all fields missing
+- user corrects origin
+- user corrects destination
+- user corrects date/value
+- multiple corrections
+- old and new values both present
+- irrelevant cities/names/numbers present
+- airport code vs city name
+- relative dates preserved as stated where instructed
+- string field
+- number field
+- boolean field
+- mixed-type schema
+- tool response supplies relevant fact
+- tool response supplies irrelevant fact
+- tool response contains wrapper metadata
+- long tool response / truncation-shaped input
+- long conversation
+- heavy small talk
+- requested field never appears
+- JSON-sensitive characters
+- model attempts to infer a missing value
+- duplicate key/extra key behavior
+- malformed or non-JSON model output
+
+Use the SkyAssist-style origin/destination/travel_date scenario as one production-shaped subset, but do not restrict the benchmark to only flight-search fields.
+
+### 8.3 Extraction metrics
+
+Report at least:
+
+- strict JSON validity rate
+- production-parser validity rate
+- required-key coverage
+- unexpected-extra-key rate
+- field-level accuracy
+- whole-object exact match
+- type correctness
+- missing/unknown correctness
+- hallucinated-value rate
+- correction/latest-value accuracy
+- critical-case pass rate
+
+Strict JSON and production-parser validity MUST be separate metrics.
+
+## 9. Runtime context summarization contract
+
+### 9.1 Current production-shaped behavior
+
+Current API source runs background context summarization on eligible node transitions when context compaction is enabled.
+
+Current manager configuration:
+
+- target_context_tokens = 4000
+- min_messages_after_summary = 2
+- summarization_timeout = 30 seconds
+- skips summarization when context message count <= 6
+
+The current Pipecat default summarization prompt asks the model to preserve:
+
+- key facts, decisions, and agreements
+- context needed to continue the conversation
+- user preferences and requirements
+- unresolved questions and action items
+
+It asks the model to omit greetings, small talk, redundant information, and resolved tangents.
+
+The runtime path keeps recent messages outside the generated summary and reinserts the summary into the LLM context while preserving the current system message.
+
+The benchmark MUST distinguish quality of the generated summary from correctness of the surrounding product context-rewrite algorithm. The research server is evaluating the model, not reimplementing the full engine.
+
+### 9.2 Runtime summary benchmark families
+
+At minimum cover:
+
+- short eligible context
+- medium context
+- long context
+- very long context near practical model limits
+- multiple topics
+- facts scattered throughout the conversation
+- one critical fact appearing only once
+- critical fact very early in context
+- user preference retention
+- decision/agreement retention
+- unresolved question retention
+- action-item retention
+- irrelevant small talk
+- repeated information
+- contradictory statements
+- user correction/superseded value
+- multiple corrections
+- tool call/result information represented in context
+- resolved tangent that should be omitted
+- unresolved tangent that should remain
+- immediate recent context that would normally remain unsummarized
+
+Also include boundary/behavior cases representing the product semantics:
+
+- <=6 messages: no-summary control case for simulator logic
+- >6 messages: eligible case
+- timeout/error handling at the benchmark/server layer
+
+### 9.3 Runtime summary annotations
+
+Each curated summary case SHOULD define:
+
+- required_facts
+- critical_facts
+- superseded_facts
+- forbidden_facts
+- user_preferences
+- decisions
+- unresolved_questions
+- action_items
+- information intentionally safe to omit
+
+### 9.4 Runtime summary metrics
+
+Report at least:
+
+- critical fact recall
+- overall required fact recall
+- forbidden/superseded fact inclusion rate
+- hallucination rate
+- contradiction rate
+- latest-value/correction accuracy
+- preference retention
+- unresolved-question retention
+- action-item retention
+- compression ratio
+- output length/tokens
+- critical-case pass rate
+
+Lexical metrics such as ROUGE MAY be included as secondary diagnostics, but MUST NOT be used as the primary correctness gate.
+
+## 10. Voicemail detection contract
+
+### 10.1 Current production-shaped behavior
+
+Current API creates a separate LLM instance for the voicemail sub-pipeline when voicemail detection is enabled. If configured to use the workflow LLM, that service is created from the workflow configuration.
+
+Current Pipecat classifier expects the model response to contain one of two labels:
+
+- CONVERSATION
+- VOICEMAIL
+
+The default classifier prompt is designed for outbound calls and includes examples of human greetings/responses and voicemail/carrier/business-hours recordings.
+
+The detector can also be configured with a long-speech timeout; current API default lookup is 8 seconds.
+
+### 10.2 Voicemail benchmark families
+
+At minimum cover:
+
+Human conversation:
+
+- Hello?
+- Hi
+- name speaking
+- Who is this?
+- Can I help you?
+- angry human response
+- confused human response
+- very short human response
+- human says the word voicemail
+- human asks whether the caller left a voicemail
+- human references a previous voicemail
+
+Voicemail/automated:
+
+- classic personal voicemail greeting
+- professional voicemail greeting
+- leave-name-and-number instruction
+- mailbox full
+- mailbox not set up
+- number not in service
+- carrier error/availability message
+- office closed/business hours message
+- long voicemail greeting
+- short automated greeting
+
+Ambiguous/adversarial:
+
+- truncated transcript
+- partial first-turn transcript
+- automation that sounds conversational
+- human speech that sounds scripted
+- voicemail greeting containing a question
+- noisy/garbled text representation
+
+### 10.3 Voicemail metrics
+
+Report at least:
+
+- accuracy
+- VOICEMAIL precision/recall/F1
+- CONVERSATION precision/recall/F1
+- false-human-as-voicemail rate
+- false-voicemail-as-human rate
+- exact-format rate
+- production-decision parse rate
+- critical-case pass rate
+
+False-human-as-voicemail MUST be reported separately because it may terminate a real human call.
+
+## 11. Post-call QA contract
+
+### 11.1 Current production-shaped behavior
+
+Current API can run QA per node and fall back to whole-call QA when node IDs are unavailable.
+
+For per-node QA it constructs:
+
+- node-specific transcript with timestamps
+- precomputed metrics
+- a summary of the node's intended purpose/script
+- a rolling summary of prior-node conversation
+- the configured QA system prompt
+
+The QA LLM receives a user message containing the current transcript and a rendered system instruction containing the QA context.
+
+The current SkyAssist QA shape expects JSON containing:
+
+- tags
+- overall_sentiment
+- call_quality_score
+- summary
+
+Production parsing is tolerant through the same JSON parser and non-dict top-level outputs are effectively treated as unusable/empty QA results.
+
+### 11.2 QA benchmark families
+
+Build gold cases for:
+
+- clean call / no tags
+- unclear conversation
+- assistant loop/repetition
+- improper assistant reply
+- frustrated user
+- user not understanding
+- hearing issues
+- dead air represented through transcript/metrics
+- user requesting unsupported feature
+- assistant lacks empathy
+- user detects AI
+- multiple simultaneous QA tags
+- negative wording without actual frustration
+- one isolated failure inside otherwise good call
+- evidence only in previous-node context
+- evidence only in current-node transcript
+- conflicting evidence
+- insufficient evidence
+- long transcript with sparse failure
+- tool-call context relevant to QA
+
+### 11.3 QA gold annotations
+
+Each QA case SHOULD define:
+
+- expected tag set
+- forbidden tag set where useful
+- expected sentiment
+- acceptable quality-score range or target
+- evidence spans/facts supporting each expected tag
+- expected summary facts
+
+### 11.4 QA metrics
+
+Report at least:
+
+- valid/production-parseable JSON rate
+- tag micro precision/recall/F1
+- tag macro precision/recall/F1
+- per-tag precision/recall/F1
+- false-positive tag rate
+- false-negative tag rate
+- sentiment accuracy
+- quality-score MAE or distance-to-acceptable-range
+- evidence-grounding accuracy
+- QA summary factuality/required-fact recall
+- critical-case pass rate
+
+Do not score Granite only by agreement with historical Qwen output. Compare both candidate and baseline to gold where gold exists.
+
+## 12. QA-support summary contracts
+
+### 12.1 Rolling previous-conversation summary
+
+Current QA code sends the prior transcript as a user message prefixed by `## Conversation` and uses a concise QA-oriented conversation-summary system prompt.
+
+Benchmark:
+
+- state carried across nodes
+- previous failures retained
+- user constraints retained
+- prior decisions retained
+- irrelevant detail compressed
+- contradictions/corrections handled
+- no hallucinated events
+
+Metrics:
+
+- required fact recall
+- critical fact recall
+- hallucination rate
+- correction/latest-value accuracy
+- compression ratio
+- usefulness for downstream QA
+
+### 12.2 Node/script summary
+
+Current QA code can summarize agent/start nodes from:
+
+- node name
+- agent prompt
+- custom tool descriptions
+- outgoing edge labels/conditions
+
+The node-summary system prompt asks for a concise 2-4 sentence description of purpose, expected behaviors, and important nuances for later QA.
+
+Benchmark cases should vary:
+
+- simple node
+- complex node
+- node with tools
+- node with many outgoing transitions
+- node with safety/negative constraints
+- node where a subtle requirement is essential for QA
+
+Metrics:
+
+- purpose retention
+- key behavior retention
+- tool/transition retention where relevant
+- prohibited-behavior retention
+- hallucination rate
+- concise length compliance
+
+Node summaries may be cached in product, so their operational frequency is different from rolling conversation summaries; keep reporting separate.
+
+## 13. Task adapter architecture
+
+Implement one adapter per logical OOB contract:
+
+- ExtractionAdapter
+- RuntimeContextSummaryAdapter
+- VoicemailAdapter
+- QAEvaluationAdapter
+- QAConversationSummaryAdapter
+- QANodeSummaryAdapter
+
+Each adapter is responsible for:
+
+1. validating the benchmark case input
+2. constructing production-shaped system/user messages
+3. supplying task-specific generation parameters when required
+4. invoking the common model client
+5. applying production-like parsing
+6. returning a normalized task result for scoring
+
+Adapters MUST NOT contain candidate-specific hacks.
+
+Adapters SHOULD expose prompt/version metadata so a result can be traced back to the exact benchmark contract.
+
+## 14. Common model client
+
+Use one configurable OpenAI-compatible chat-completions client where feasible.
+
+Required configuration SHOULD include:
+
+- base URL
+- model name
+- API key/token if needed
+- timeout
+- temperature
+- max tokens
+- optional seed if supported
+- concurrency
+
+The runner MUST be endpoint-driven so local and GB10/DGX runs use the same benchmark logic.
+
+No company endpoint, credential, or secret may be committed to the repository.
+
+## 15. Standalone test server
+
+The research server should expose the minimum serving functionality needed by the benchmark. Prefer an OpenAI-compatible `/v1/chat/completions` surface if supported by the selected Granite serving stack.
+
+The research server is NOT an Olegos API clone.
+
+It should support:
+
+- model load/start
+- chat completion requests
+- deterministic/low-temperature quality runs
+- token usage when available
+- request/error logging
+- health/readiness check
+- configuration through CLI/env/config file
+
+Later GB10/DGX deployment should reuse the same serving interface.
+
+## 16. Runner behavior
+
+The benchmark runner MUST support:
+
+- selecting one task or all tasks
+- selecting one dataset layer or all layers
+- filtering by tags/difficulty/criticality
+- deterministic run IDs
+- configurable endpoint/model
+- sequential quality mode
+- controlled concurrency performance mode
+- bounded retries for transport failures
+- timeout classification
+- resume without overwriting prior results
+- machine-readable JSONL result output
+- aggregate report generation
+
+A failed request is a benchmark result, not something silently dropped.
+
+## 17. Repetition and determinism
+
+Quality runs SHOULD default to deterministic or near-deterministic generation where the server/model supports it.
+
+For critical tasks, support repeated-run stability checks. Record disagreement rate across repeats.
+
+Do not mix stochastic stability experiments with the canonical quality score without clearly labeling them.
+
+## 18. Baseline comparison
+
+Where a current Qwen baseline endpoint or frozen outputs are available, report:
+
+- candidate vs gold
+- baseline vs gold
+- candidate regression/improvement relative to baseline
+- candidate vs historical baseline output as a diagnostic only
+
+Historical baseline output MUST NOT be treated as unquestionable truth.
+
+## 19. Quality gates
+
+Exact thresholds should be frozen before the canonical Granite evaluation to avoid moving the goalposts.
+
+Initial gate structure:
+
+Extraction:
+- zero critical hallucinations
+- very high production-parser validity
+- no material regression in field accuracy vs baseline
+
+Runtime summary:
+- no critical-fact regression
+- zero/near-zero critical hallucinations
+- correction/latest-value behavior at least baseline-comparable
+- useful compression
+
+Voicemail:
+- no unacceptable human-as-voicemail errors
+- classification F1 at least baseline-comparable
+- production-compatible label output
+
+QA:
+- tag F1 and critical-tag behavior baseline-comparable
+- no unacceptable false-pass/false-fail pattern
+- valid structured output
+
+QA-support summaries:
+- critical information retention baseline-comparable
+- no material hallucination regression
+
+Final numeric thresholds MUST be documented before official results are generated.
+
+## 20. Local phase
+
+Local testing is for:
+
+- server correctness
+- model loading feasibility
+- prompt/adapter correctness
+- parser correctness
+- benchmark-runner correctness
+- qualitative/quantitative task quality
+- token/output-length behavior
+- rough functional latency only
+
+Local laptop results MUST NOT be presented as evidence of GB10/DGX production serving suitability.
+
+## 21. GB10/DGX research phase
+
+After the standalone system is runnable and local quality evidence exists, request approved research compute access from Timur.
+
+Run the same benchmark artifacts against Granite on the approved research namespace/hardware.
+
+Measure at least where technically available:
+
+- end-to-end request latency p50/p95
+- TTFT p50/p95 for streamed measurements
+- decode tokens/sec
+- aggregate tokens/sec
+- requests/sec
+- concurrency scaling
+- memory/unified-memory usage
+- model load/startup time
+- timeout rate
+- server error rate
+- OOM/failure behavior
+
+Suggested initial controlled concurrency levels:
+
+- 1
+- 2
+- 4
+- 8
+
+Adjust only to the safe limits of the approved environment.
+
+Do not start extra CUDA/vLLM processes on shared Olegos serving hardware without explicit operator approval.
+
+## 22. Performance methodology
+
+Separate quality and performance modes.
+
+Quality mode:
+
+- low/zero temperature
+- sequential or low concurrency
+- complete raw outputs retained
+- emphasis on correctness
+
+Performance mode:
+
+- fixed representative request sets
+- warmup separated from measured iterations
+- concurrency explicitly controlled
+- server/model configuration frozen and recorded
+- p50/p95 reported, not averages alone
+- failures and timeouts included in the report
+
+Do not infer GPU capacity improvement from the OVP-34 16.14% live-window OOB decode-token share. Isolation/token relocation and measured hardware capacity are different claims.
+
+## 23. Reporting
+
+Generate both machine-readable and human-readable outputs.
+
+Machine-readable:
+
+- JSONL per request/result
+- aggregate JSON/CSV summary
+
+Human-readable report should include:
+
+- environment and model configuration
+- dataset version/hash
+- prompt/adapter version
+- case counts by task/source/difficulty
+- task-specific quality metrics
+- critical failures
+- baseline comparison
+- latency/performance metrics where applicable
+- errors/timeouts/OOMs
+- limitations
+- per-job recommendation
+
+## 24. Per-job decision matrix
+
+The final decision MUST be per workload, for example:
+
+| Job | Quality Gate | GB10 Gate | Decision |
+|---|---|---|---|
+| Extraction | PASS/FAIL | PASS/FAIL | candidate / keep baseline |
+| Runtime summary | PASS/FAIL | PASS/FAIL | candidate / keep baseline |
+| Voicemail | PASS/FAIL | PASS/FAIL | candidate / keep baseline |
+| QA | PASS/FAIL | PASS/FAIL | candidate / keep baseline |
+| QA support summaries | PASS/FAIL | PASS/FAIL | candidate / keep baseline |
+
+A failure on one job MUST NOT automatically reject Granite for every other job.
+
+## 25. Proposed repository structure
+
+```text
+ovp36-oob-model-benchmark/
+├── README.md
+├── pyproject.toml
+├── docs/
+│   ├── BENCHMARK_SPEC.md
+│   ├── SOURCE_AUDIT.md
+│   ├── LOCAL_RUNBOOK.md
+│   └── GB10_RUNBOOK.md
+├── configs/
+│   └── models/
+├── cases/
+│   ├── extraction/
+│   ├── context_summary/
+│   ├── voicemail/
+│   ├── qa/
+│   ├── qa_conversation_summary/
+│   └── qa_node_summary/
+├── src/
+│   └── ovp36_benchmark/
+│       ├── client.py
+│       ├── runner.py
+│       ├── schemas.py
+│       ├── adapters/
+│       ├── metrics/
+│       └── reporting/
+├── tests/
+└── results/              # gitignored
+```
+
+The exact tree can change during implementation review, but separation of cases, adapters, client, scoring, tests, and generated results should be preserved.
+
+## 26. Engineering requirements
+
+- Python 3.12 unless research-server constraints require a documented exception.
+- Typed code for public/internal benchmark interfaces.
+- Pydantic/dataclass schemas for case/result configuration where useful.
+- No secrets in source control.
+- No hard-coded company infrastructure addresses.
+- Clear error taxonomy.
+- Deterministic fixture tests for parsers/scorers.
+- Unit tests for each adapter.
+- Golden tests for prompt construction where practical.
+- Results directory ignored by Git.
+- Raw model output always retained for auditability.
+- Every aggregate score must be reproducible from saved per-case results.
+- Benchmark should fail loudly on invalid case schema instead of silently skipping.
+- Version/hash the benchmark dataset and prompt contracts.
+
+## 27. Required tests before first model evaluation
+
+At minimum:
+
+- case schema validation
+- extraction prompt golden test
+- extraction production-like parser tests
+- context-summary prompt golden test
+- <=6-message no-summary simulator behavior test
+- voicemail prompt/label parser tests
+- QA prompt rendering test
+- QA non-dict/malformed output test
+- QA-support summary prompt tests
+- model client timeout/error tests
+- runner resume/no-overwrite test
+- scorer deterministic tests
+- report aggregation test
+
+## 28. Safety and interpretation traps
+
+Do not:
+
+- equate OOB token share with GPU capacity savings
+- count QA rolling summaries as runtime context summarization
+- treat historical Qwen output as ground truth
+- optimize prompts specifically for Granite in a way the baseline does not receive
+- use generic academic benchmarks as the primary OVP-36 quality evidence
+- hide malformed output behind the tolerant parser; report strict and tolerant success separately
+- silently discard failed requests
+- compare local Mac performance directly to GB10/DGX performance
+- start GPU serving processes on shared Olegos infrastructure without approval
+- integrate Olegos before the research quality/hardware gates justify it
+
+## 29. Implementation order
+
+Phase 0 - freeze documentation
+
+1. SOURCE_AUDIT.md: exact model-facing contracts from current Olegos source.
+2. BENCHMARK_SPEC.md: this document, reviewed and accepted.
+3. CASE_MATRIX.md or equivalent: enumerated test families and target counts.
+4. IMPLEMENTATION_PLAN.md: exact modules, interfaces, tests, and milestones.
+
+Phase 1 - benchmark skeleton
+
+5. case/result schemas
+6. common model client
+7. adapter interfaces
+8. result writer and basic runner
+9. unit tests
+
+Phase 2 - task implementations
+
+10. extraction adapter + cases + scorer
+11. runtime summary adapter + cases + scorer
+12. voicemail adapter + cases + scorer
+13. QA adapter + cases + scorer
+14. QA-support summary adapters + cases + scorers
+
+Phase 3 - standalone Granite serving
+
+15. minimal local server/run configuration
+16. smoke test
+17. canonical local quality run
+18. baseline comparison where available
+
+Phase 4 - GB10/DGX research
+
+19. request approved compute access once the standalone system is runnable
+20. deploy/run only in the research namespace/environment approved by Timur
+21. canonical hardware benchmark
+22. per-job decision report
+
+Phase 5 - integration decision
+
+23. only jobs that pass both quality and hardware gates become OVP-36 integration candidates
+24. product routing/integration is designed separately against current product source
+
+## 30. Definition of done for the research benchmark
+
+The research benchmark is ready for a GB10/DGX request when:
+
+- the repo can be installed from documented instructions
+- the standalone model endpoint can be started locally or an endpoint can be configured
+- all task adapters are implemented or the explicitly approved subset is implemented
+- curated cases have gold annotations
+- parser/scorer tests pass
+- a local benchmark run produces immutable raw results and aggregate reports
+- prompt/config/model metadata are captured
+- no company secrets/infrastructure addresses are committed
+- local limitations are documented
+
+The research phase is complete when:
+
+- canonical quality results are available per job
+- canonical approved-hardware results are available per job
+- failure cases are documented
+- a per-job candidate/keep-baseline recommendation is produced
+- claims are limited to what was actually measured
+
