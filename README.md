@@ -1,10 +1,10 @@
 # OVP-36 OOB model benchmark
 
-Standalone research benchmark. **Stages 1–3A:** strict schemas, TOML configuration,
+Standalone research benchmark. **Stages 1–3B:** strict schemas, TOML configuration,
 read-only JSONL dataset operations, versioned prompt contracts, and response
-parsing, plus immutable request preparation and pure identity primitives. Model
-client, runner, result persistence, task adapters, scoring, reports, and serving
-remain unimplemented.
+parsing, immutable request preparation, pure identity primitives, and a common
+one-shot AsyncOpenAI client. Runner, result persistence, task adapters, scoring,
+reports, and serving remain unimplemented.
 
 OVP-36 has four product-level OOB areas: extraction, runtime context summary,
 voicemail, and post-call QA. The benchmark has six source-derived task contracts:
@@ -34,9 +34,10 @@ python3.12 -m venv .venv
 .venv/bin/python -m unittest discover -s tests -v
 ```
 
-The uv lockfile pins runtime dependencies; the pip alternative resolves the
-version range from `pyproject.toml`. Tests use synthetic cases in temporary
-directories and need no network, model, credentials, or external services.
+The uv lockfile pins runtime dependencies; the pip alternative honors the exact
+OpenAI/HTTPX pins and resolves other ranges from `pyproject.toml`. Tests use
+synthetic cases in temporary directories and need no network, model, credentials,
+or external services.
 
 ## Data contracts
 
@@ -231,6 +232,76 @@ files, environment, timestamps, URLs, or credentials. Callers must supply the
 matching validated config fingerprint and identity components. `ExecutionKey`
 contains run ID, case ID, request fingerprint, and zero-based repetition index.
 These primitives perform no execution, result writing, or resume behavior.
+
+## One-shot model client (Stage 3B)
+
+`ModelClient(resolved_endpoint, timeout_seconds=T)` owns an HTTPX client and an
+`AsyncOpenAI` instance, pinned to **openai==2.54.0 / httpx==0.28.1**. Use it as an
+async context manager or call `await client.aclose()`; repeated close is safe.
+`await client.send_once(prepared_request)` dispatches
+`PreparedRequest.to_request_body()` directly through
+`sdk.with_raw_response.chat.completions.create(**body)`. The
+prepared request supplies the model and generation settings. Both preparation
+paths use this same client; historical replay still bypasses adapters.
+
+Actual outgoing JSON passed MockTransport fidelity tests for current replay
+shapes: absent/null content, tool calls and IDs, exact argument strings, unknown
+fields, nested structures, whitespace, Unicode, and ordering. This establishes
+JSON-message preservation, not original historical HTTP-byte equality. Tests
+block real socket/DNS access; no model server is needed or started.
+
+SDK retries and HTTP transport retries are explicitly zero; redirects and HTTP
+environment configuration are disabled. No retry loop exists here. Before SDK
+construction, the presence of `OPENAI_CUSTOM_HEADERS`, `OPENAI_ORG_ID`,
+`OPENAI_PROJECT_ID`, or `OPENAI_LOG` in the environment raises `ClientConfigurationError` naming
+only the variable, including when its value is empty or whitespace.
+The client never mutates the environment. These settings can add or override
+headers or enable SDK logging independently of HTTPX `trust_env=False` in the
+pinned SDK. Exact OpenAI 2.54.0 source reads `OPENAI_LOG` during import and can
+enable OpenAI/HTTPX logging. The constructor refuses this ambient switch before
+dispatch so it cannot silently change benchmark privacy/determinism. The client
+itself emits no provider payload logs; external application/root logging remains
+outside this library's control. The guard does not undo import-time logging
+configuration or change process logger levels.
+
+An explicitly resolved API key wins over ambient `OPENAI_API_KEY`. Without a
+configured key, the SDK receives `ovp36-local-no-auth`, a syntactic credential
+placeholder, not a secret. It produces an Authorization Bearer header accepted
+by the intended local servers. The client does not log or persist credentials,
+the placeholder, URLs, payloads, or raw exceptions, and does not configure logging.
+
+The same T sets HTTPX/SDK operation timeouts and an `asyncio.timeout(T)` deadline
+on the SDK await. External task cancellation propagates. Timeout does not prove
+server-side generation stopped. `latency_ms` measures complete client-observed
+request/completion latency, including response extraction; it is not TTFT,
+decode time, or GPU latency.
+
+Immutable results capture content (including null/absent distinction), finish
+reason, reported model, and nullable usage. Missing counts remain None, reported
+zero remains zero, and missing totals are never derived. Malformed completion
+envelopes/counts produce non-retryable protocol errors; empty/null content and
+poor task text can still be transport successes. Error results contain only safe
+classification fields, never exception objects or provider error bodies. HTTP
+408/429/500/502/503/504 and connection/timeouts are marked retryable for a future
+runner; redirects and other HTTP statuses are not retried.
+
+OpenAI 2.54.0 can coerce malformed nested usage values (`true` to `1`, `"2"` to
+`2`). Before SDK parsing, the transient raw response's `http_response.json()`
+must be a JSON object. The client validates only the five consumed usage counts
+and their containing objects against original JSON types. Booleans, strings,
+floats (including `2.0`), negative integers, arrays, and objects are rejected as
+counts. Missing/null usage is accepted as None; missing/null counts and details
+are allowed, and unknown usage fields are ignored. The synchronous `raw.parse()`
+then supplies the usual SDK completion and content field-set semantics without
+another dispatch. Raw bytes, JSON objects, and headers are never stored in results.
+Malformed usage produces non-retryable `invalid_usage_schema`; undecodable JSON
+produces `invalid_response_json`, and a non-object top level produces
+`invalid_response_schema`. These codes contain no provider data.
+
+Provider-controlled response text is hidden from repr but remains available to
+later parsing. Ordinary result serialization is **not** a safe persistence
+projection. Stage 3C persistence and Stage 3D execution/retry orchestration remain
+unimplemented, as do adapters and replay loading.
 
 ## Prompt contracts (Stage 2)
 

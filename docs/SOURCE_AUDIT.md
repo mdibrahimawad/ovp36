@@ -1310,3 +1310,117 @@ This is sufficient to answer the pre-integration questions:
 - Once moved to approved GB10/DGX research hardware, is the model actually advantageous under Olegos-shaped load?
 
 Only after those gates pass should OVP-36 product routing/MPS integration be designed against the latest live repositories.
+
+---
+
+# 18. Stage 3B common-client implementation evidence
+
+The research client pins **openai==2.54.0 / httpx==0.28.1**, verified under Python
+3.12.7. This is a research transport boundary, not an Olegos routing change.
+`PreparedRequest.to_request_body()` is passed directly to
+`sdk.with_raw_response.chat.completions.create(**body)` without rebuilding messages or
+generation fields. Actual outgoing JSON passed isolated MockTransport tests for
+the currently scoped replay shapes: absent versus null content, assistant tool
+calls, tool-result IDs, exact argument strings, unknown fields, nested objects
+and arrays, whitespace, Unicode, and sequence order. Captured replay continues
+to bypass adapters. This test establishes captured JSON-message semantics, not
+historical HTTP-byte equality; the runtime-summary tracing qualification in
+section 1.1 remains unchanged.
+
+Exact installed SDK source references and corresponding implementation choices:
+
+- `openai/_client.py`, `AsyncOpenAI.__init__`: `OPENAI_CUSTOM_HEADERS`,
+  `OPENAI_ORG_ID`, and `OPENAI_PROJECT_ID` are rejected whenever present in the
+  environment before construction, including empty and whitespace values. The custom-header
+  setting can override Authorization; org/project can add headers (even empty
+  ones) despite HTTPX `trust_env=False`. Configuration
+  errors name only the variable, never its value. The process environment is
+  never mutated. Explicit API key and base URL override their ambient fallbacks.
+  The constructor also reads `OPENAI_ADMIN_KEY` and `OPENAI_WEBHOOK_SECRET`;
+  these do not alter this explicitly keyed chat-completion request (admin auth
+  is a different security path), so they are not part of the header guard.
+- `openai/__init__.py` calls `_setup_logging()` during import. In exact 2.54.0,
+  `openai/_utils/_logs.py:setup_logging()` reads `OPENAI_LOG`; exactly `debug`
+  or `info` calls `logging.basicConfig()` and sets the `openai` and `httpx`
+  loggers to DEBUG or INFO respectively. Other values do not configure logging,
+  but the benchmark rejects variable presence, including empty/whitespace, for
+  deterministic privacy behavior. The existing constructor guard runs before
+  client construction or requests; no import-order or logger-level changes are
+  needed. Import-time setup itself has no benchmark request data to log.
+- `openai/_base_client.py:BaseClient._build_request()` logs request options at
+  DEBUG, including `json_data` with messages. `AsyncAPIClient.request()` logs
+  URLs, response status/headers, request IDs, and exception traces. The
+  `SensitiveHeadersFilter` in `_utils/_logs.py` redacts a limited set of request
+  header names, not message payloads or all response headers. HTTPX 0.28.1's
+  `_client.py:AsyncClient._send_single_request()` logs URL/status at INFO.
+  `AsyncCompletionsWithRawResponse` and `_legacy_response.py`'s
+  `async_to_raw_response_wrapper()` delegate to this same request path, so the
+  raw-response API does not avoid these logs. No unconditional successful
+  response-body logging was found in this path; response metadata and request
+  payload exposure already require the guard.
+- `openai/_base_client.py`, `AsyncAPIClient` and request handling: the harness
+  supplies its own HTTPX client, with redirects disabled and `trust_env=False`.
+  The default HTTP transport also has `trust_env=False` and `retries=0`; SDK
+  `max_retries=0`. Tests confirm one dispatch on success, retryable HTTP failures,
+  connection failures, timeouts, and 301/302/307/308 redirects. Redirects are
+  returned as non-retryable `redirect_not_followed`; Location is not retained.
+- `openai/resources/chat/completions/completions.py`,
+  `AsyncCompletionsWithRawResponse`, and `openai/_legacy_response.py`: the exact
+  async raw-response create API returns `LegacyAPIResponse`. Its
+  `http_response.json()` exposes original JSON types; its synchronous `parse()`
+  returns the SDK completion locally, without a second HTTP request. Tests
+  verify this sequence and unchanged outgoing JSON. Raw response data is
+  transient and is not stored in results. Malformed JSON (`JSONDecodeError`) or
+  invalid JSON encoding (`UnicodeDecodeError`) produces non-retryable
+  `invalid_response_json`; a non-object JSON top level produces
+  `invalid_response_schema`. Unusable SDK envelopes remain protocol errors.
+  The SDK's `APIResponseValidationError` is also tested. No broad Exception
+  catch is used.
+- `openai/types/chat/chat_completion_message.py` and `openai/_models.py`:
+  `"content" in message.model_fields_set` distinguishes absent content from
+  explicit null. Text, empty string, null, and absent content are transport
+  successes when the envelope is usable. Task parsing/quality is separate.
+- `openai/types/completion_usage.py`: prompt/completion/total counts and nested
+  `prompt_tokens_details.cached_tokens` /
+  `completion_tokens_details.reasoning_tokens` are preserved as nullable
+  nonnegative integers. Missing stays None; reported zero stays zero. No totals
+  or cache/reasoning counts are inferred (OVP-84 missing-versus-zero rule).
+
+OpenAI 2.54.0 was observed coercing some malformed original nested usage values:
+`true` becomes `1`, and `"2"` becomes `2`. The benchmark therefore checks original
+JSON usage before calling `raw.parse()`. Only the five consumed counts and their
+containing objects are validated; this is not a second general completion
+schema validator. Counts accept only missing/null or nonnegative JSON integers.
+Booleans are explicitly rejected before checking integers; strings, floats
+(including `2.0`), negative integers, arrays, and objects are also rejected.
+Malformed usage returns non-retryable `invalid_usage_schema` without recording
+the offending value. Missing or explicit null usage safely becomes usage=None
+in the exact SDK and is accepted. Details may be missing, null, or objects;
+unknown usage fields are ignored. After this check the SDK completion remains
+the source for response extraction and content-presence semantics.
+
+Without an explicitly resolved key, the client supplies `ovp36-local-no-auth`.
+This is a harmless syntactic SDK credential placeholder, not a secret; it sends
+an Authorization Bearer header for the intended local compatible servers.
+Neither the placeholder nor credentials are logged or persisted by the client.
+
+A single configured T is explicitly passed to HTTPX and AsyncOpenAI, avoiding
+the SDK's special behavior when a custom HTTPX timeout equals its five-second
+default. `asyncio.timeout(T)` bounds the awaited completion operation. External
+cancellation propagates; client timeout does not prove server-side generation
+stopped. `perf_counter()` measures complete client-observed request/completion
+latency through response extraction, not TTFT, decode time, or GPU latency.
+
+Results retain only required response fields and safe error classification, not
+SDK objects, exception text/objects, requests, headers, URLs, or error bodies.
+Provider-controlled content/model/finish-reason fields are excluded from repr.
+Ordinary response serialization remains private runtime data, not a persistence
+projection. The benchmark client itself emits no provider payload logs and refuses
+the pinned SDK's ambient `OPENAI_LOG` switch on presence. It does not undo SDK
+import-time setup or reconfigure global logging; external application/root
+logging remains outside this library's control. SDK close owns closure of the supplied HTTPX client; repeated close and
+normal/exceptional context exits are tested.
+
+Stage 3B tests use synthetic MockTransport exchanges with socket/DNS guards.
+No real model endpoint is contacted. Persistence, runner/retry orchestration,
+adapters, replay loading, scoring/reporting, and serving remain later work.

@@ -7,7 +7,7 @@ name = "ovp36-benchmark"
 version = "0.1.0"
 description = "Standalone OVP-36 OOB research benchmark"
 requires-python = ">=3.12,<3.13"
-dependencies = ["pydantic>=2.13.4,<3"]
+dependencies = ["pydantic>=2.13.4,<3", "openai==2.54.0", "httpx==0.28.1"]
 
 [tool.setuptools.packages.find]
 where = ["src"]
