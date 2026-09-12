@@ -15,7 +15,12 @@ Each case will eventually become an immutable data fixture. Model outputs and sc
 The matrix has two complementary parts:
 
 1. **Curated/adversarial cases** — explicit human-defined expected behavior.
-2. **OVP-34 replay cases** — exact captured model-facing requests and outputs from the final OVP-34 telemetry. All 242 selected observations have both. Historical Qwen output is baseline behavior, not automatically ground truth; curated/adversarial requests instead come from source-aligned adapters.
+2. **OVP-34 replay cases** — captured historical trace messages and outputs from the final OVP-34 telemetry, preserved exactly. All 242 selected observations have both. Historical Qwen output is baseline behavior, not automatically ground truth; curated/adversarial requests instead come from source-aligned adapters.
+
+OVP-36 has four product-level OOB areas and six source-derived benchmark task
+contracts: `extraction`, `context_summary`, `voicemail`, `qa`,
+`qa_conversation_summary`, `qa_node_summary`. These are benchmark taxonomy, not
+current routing labels; the two supporting summaries belong to QA.
 
 ## 2. Common case fields
 
@@ -37,8 +42,8 @@ Every result record should include:
 - `run_id`
 - `case_id`
 - `model`
-- `endpoint`
-- `server_config`
+- `endpoint_alias`
+- `safe_server_metadata` (allowlisted, operator-declared server identity)
 - `raw_output`
 - `parsed_output`
 - `parser_status`
@@ -49,6 +54,11 @@ Every result record should include:
 - `total_tokens`
 - task-specific scores
 - timeout/error fields
+
+Result records and manifests MUST NOT persist literal `base_url`, URL-derived
+hashes, API keys, Authorization/header values, or arbitrary raw server
+configuration. Use the explicit safe configuration projection; neither full
+`ResolvedEndpoint` nor raw `RunConfig` is a persisted result contract.
 
 ---
 
@@ -319,6 +329,13 @@ Primary QA-support metrics:
 # 8. OVP-34 replay matrix
 
 Use a separate manifest selecting the 242 canonical OOB observations from a private/local export of the final OVP-34 100-run telemetry. Every selected observation has captured model-facing input messages and an output.
+
+These messages are the best available captured trace/model-facing evidence.
+For the 56 runtime summaries, current tracing reconstructs the summary request
+after generation; historical wire equality is not independently proven. Retain
+all 56 with that caveat and bypass adapters for all historical replay. Exact
+preservation refers to captured JSON message semantics, not verified original
+HTTP bytes. Stage 3A provides request preparation only, not replay loading.
 
 | Replay family | Captured observations | Exact-message replay target |
 |---|---:|---:|

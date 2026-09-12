@@ -19,6 +19,12 @@ The benchmark MUST make a per-job decision. It MUST NOT assume that one replacem
 
 ## 2. Scope
 
+OVP-36 has four product-level OOB areas: variable extraction, runtime context
+summarization, voicemail, and post-call QA. The benchmark distinguishes six
+source-derived task contracts: `extraction`, `context_summary`, `voicemail`,
+`qa`, `qa_conversation_summary`, and `qa_node_summary`. The latter two support QA;
+these task values are benchmark taxonomy, not current product routing labels.
+
 In scope:
 
 - variable extraction
@@ -68,7 +74,7 @@ The benchmark MUST emulate what the OOB LLM sees and what Olegos expects back. I
 
 The research architecture should isolate model quality and serving behavior from unrelated product infrastructure.
 
-Conceptual flow:
+Conceptual curated/adversarial flow (historical replay bypasses adapters):
 
 benchmark case
 -> task adapter
@@ -87,7 +93,7 @@ The same benchmark runner MUST be able to target multiple endpoints without code
 - current Qwen baseline endpoint if approved and available
 - future candidate models
 
-Endpoint/model selection should be configuration, not hard-coded task logic. For OVP-34 replay, the request path uses exact captured historical messages; source-aligned task adapters construct requests for curated/adversarial cases.
+Endpoint/model selection should be configuration, not hard-coded task logic. For OVP-34 replay, the request path preserves captured historical trace messages unchanged; source-aligned task adapters construct requests for curated/adversarial cases.
 
 ## 5. Observed workload priorities from OVP-34
 
@@ -114,16 +120,24 @@ Use three complementary data layers.
 
 ### 6.1 Layer A: frozen OVP-34 replay set
 
-The final OVP-34 100-run telemetry has exactly **242 selected OOB observations**, each with captured model-facing input messages and an output: 40 extraction, 56 runtime summary, 22 voicemail, 72 post-call QA, and 52 QA previous-conversation summaries.
+The final OVP-34 100-run telemetry has exactly **242 selected OOB observations**, each with captured historical trace input messages and an output: 40 extraction, 56 runtime summary, 22 voicemail, 72 post-call QA, and 52 QA previous-conversation summaries. These messages are the best available captured trace/model-facing evidence, not a blanket claim of verified historical HTTP wire equality.
+
+For runtime context summaries, current tracing reconstructs the summary request
+after generation; historical wire equality is not independently proven. Retain
+all 56 observations with this qualification. Do not regenerate their messages or
+automatically apply the same caveat to unrelated tasks. All 242 selected input
+objects contain only `messages`; message-level tool fields must be preserved.
 
 Use a private/local export and a separate manifest selecting those canonical observations. Replay the exact captured request message sequence, roles, and content, including already-rendered system messages; do not reconstruct or regenerate prompts from conversational text. Preserve historical outputs and task/span/provenance IDs. Keep raw/private replay material ignored and uncommitted. Missing local exports are availability problems, not a reason to invent replacement requests.
 
 The runner/client design must preserve two distinct request paths:
 
-- OVP-34 historical replay: exact captured model-facing messages -> send directly; DO NOT regenerate with task adapters.
+- OVP-34 historical replay: captured trace messages preserved exactly -> send directly; DO NOT regenerate with task adapters.
 - Curated/adversarial cases: Olegos-shaped task input -> source-aligned adapter -> generated model-facing messages.
 
-No replay loader is implemented in Stage 2.
+Stage 3A implements separate captured/generated preparation paths and immutable
+transport snapshots. No replay loader, model client, runner, or result persistence
+is implemented yet. The strict curated task-input schemas remain separate.
 
 Historical baseline output is reference behavior, NOT automatically ground truth.
 
@@ -294,6 +308,26 @@ Current manager configuration:
 - min_messages_after_summary = 2
 - summarization_timeout = 30 seconds
 - skips summarization when context message count <= 6
+
+Runtime summary supplies the one-shot Python argument `max_tokens=4000`.
+Current API service-factory settings also carry a default `max_tokens` cap;
+`LLM_MAX_TOKENS_CAP_REASONING` defaults to 2048 for reasoning models such as Qwen3
+and is environment-overridable. Speaches receives it through
+`SpeachesLLMSettings(model=model, max_tokens=max_tokens)`.
+
+Newer supplied Pipecat builds both token-limit keys, sets
+`max_completion_tokens=4000` because that key exists, and does not clear an
+already configured service `max_tokens`. With Qwen source defaults, the
+constructed parameter dictionary can contain both `max_tokens=2048` and
+`max_completion_tokens=4000` before SDK/provider handling. All 56 historical
+summary observations have empty `modelParameters` (`{}`); they do not establish
+the exact historical wire token-limit fields.
+
+The benchmark intentionally normalizes candidate requests to exactly one selected
+limit field to avoid ambiguous dual-limit behavior. This does not claim
+byte-for-byte reproduction of the product's provider parameter dictionary.
+Product settings remain provenance for later per-task candidate configuration;
+Granite's canonical field/value is not chosen here.
 
 The current Pipecat default summarization prompt asks the model to preserve:
 
@@ -594,7 +628,7 @@ Each adapter is responsible for:
 1. validating the benchmark case input
 2. constructing production-shaped system/user messages
 3. supplying task-specific generation parameters when required
-4. invoking the common model client
+4. handing a prepared request to the runner, which invokes the common model client
 5. applying production-like parsing
 6. returning a normalized task result for scoring
 
@@ -617,7 +651,13 @@ Required configuration SHOULD include:
 - optional seed if supported
 - concurrency
 
-Keep historical/source generation evidence separate from candidate configuration: runtime summary overrides `max_tokens=4000`; historical Qwen voicemail exposes `max_tokens=2048`; service-factory defaults depend on model identity. Do not infer Granite limits of 2048 or 512. Freeze candidate settings before canonical evaluation.
+Keep historical/source generation evidence separate from candidate configuration:
+runtime summary supplies the Python argument `max_tokens=4000`, while current
+source can retain both provider limit fields as described in section 9.1.
+Historical summary wire limits are unverified; historical Qwen voicemail exposes
+`max_tokens=2048`. Service-factory defaults depend on model identity and environment.
+Do not infer Granite settings from these observations. Freeze candidate settings
+before canonical evaluation.
 
 The runner MUST be endpoint-driven so local and GB10/DGX runs use the same benchmark logic.
 
@@ -661,6 +701,29 @@ The benchmark runner MUST support:
 A failed request is a benchmark result, not something silently dropped.
 
 ## 17. Repetition and determinism
+
+Stage 3A provides pure versioned SHA-256 identity primitives and an explicit safe
+persistent configuration projection. `EndpointConfig.alias` is operator-declared
+experiment identity, validated as a bounded identifier. Server metadata, persisted
+model names, and experiment labels are bounded nonsecret metadata (policy in
+README). Literal endpoint URLs and URL-derived hashes are never persisted or
+included in identity. API keys, environment references/values, and timestamps are
+excluded. Legacy `redact_config()` is not suitable for persistence.
+
+Canonical configuration requires at least one useful declared server identity:
+checkpoint, revision, artifact hash, chat-template hash, or runtime/version pair.
+Exploratory configuration permits unknown metadata. Operators must update safe
+declared identity when materially changing servers; changing only the runtime URL
+does not change run ID. This guard cannot prove physical-server equivalence.
+
+Generation configuration retains the explicit numeric `max_tokens` value and
+adds `token_limit_field` (`max_tokens` or `max_completion_tokens`). The former is
+the backward-compatible harness default, not a Granite quality decision. Prepared
+requests contain exactly one completion-limit key, optional seed, and stream=False.
+This is explicit candidate request normalization to avoid ambiguous dual-limit
+behavior, not byte-for-byte reproduction of the product's provider parameter
+dictionary. Product runtime-summary 4000 remains source provenance, not a
+universal limit or a selected Granite canonical field/value.
 
 Quality runs SHOULD default to deterministic or near-deterministic generation where the server/model supports it.
 

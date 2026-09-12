@@ -18,18 +18,30 @@ This document does not authorize or perform product changes, deployments, MPS ed
 
 ### 1.1 Final OVP-34 evidence
 
-The higher-fidelity review of the final OVP-34 100-run raw Langfuse telemetry and frozen SkyAssist configuration established exactly **242 selected OOB observations**, each with captured model-facing input messages and an output: 40 extraction, 56 runtime context summary, 22 voicemail, 72 post-call QA, and 52 QA previous-conversation summaries.
+The higher-fidelity review of the final OVP-34 100-run raw Langfuse telemetry and frozen SkyAssist configuration established exactly **242 selected OOB observations**, each with captured historical trace input messages and an output: 40 extraction, 56 runtime context summary, 22 voicemail, 72 post-call QA, and 52 QA previous-conversation summaries. These messages are the best available captured trace/model-facing evidence. All selected input objects contain only `messages`, with no top-level tools/tool_choice; message-level tool fields remain part of the evidence.
+
+For runtime context summaries, current tracing reconstructs the summary request
+after generation; historical wire equality is not independently proven. Preserve
+all 56 observations with this qualification rather than regenerating requests.
+Do not automatically apply that specific caveat to other tasks or claim universal
+historical HTTP wire equality.
 
 There are two fidelity paths:
 
 - **OVP-34 replay:** read a private/local export, select those 242 canonical observations, and preserve the exact captured message sequence, content, roles, historical output, and task/span/provenance IDs. Do not reconstruct prompts from conversational text or regenerate already-rendered system messages.
 - **Curated/adversarial cases:** generate requests through source-aligned task adapters.
 
-Historical outputs remain baseline behavior, not automatic gold. Keep raw/private exports ignored and uncommitted. If a local export is absent or incomplete, report that availability problem; do not fabricate inputs. No replay loader is implemented in Stage 2.
+Historical outputs remain baseline behavior, not automatic gold. Keep raw/private exports ignored and uncommitted. If a local export is absent or incomplete, report that availability problem; do not fabricate inputs. Stage 3A prepares captured messages directly without adapters; it does not implement a replay loader or execute requests.
 
 ---
 
 ## 2. What the standalone benchmark should replicate
+
+OVP-36 has four product-level OOB areas: extraction, runtime context summary,
+voicemail, and post-call QA. Six source-derived benchmark task contracts cover
+these areas: `extraction`, `context_summary`, `voicemail`, `qa`,
+`qa_conversation_summary`, and `qa_node_summary`. The two additional summaries
+support QA. Task values are benchmark taxonomy, not current routing labels.
 
 The benchmark should **not** recreate the full Olegos application.
 
@@ -111,7 +123,19 @@ Source: `api/services/pipecat/service_factory.py`
 4. calls `create_llm_service_from_provider(...)`;
 5. applies the configured context-window guard where supported.
 
-The factory applies a default per-call max-token cap. Models whose name is treated as reasoning-capable (`gpt-5*`, `o1*`, `qwen3*`, `deepseek-r1*`, `deepseek-v3*`) receive the roomier reasoning cap; other models receive the normal cap. Runtime context summary explicitly overrides `max_tokens=4000`; the historical Qwen voicemail path exposes `max_tokens=2048`. These are distinct current-source/historical observations, not a universal candidate policy. Because factory defaults depend on model identity, candidate generation limits must be decided and recorded before canonical evaluation. Do not infer Granite limits of 2048 or 512 from the historical Qwen runs.
+The factory gives every non-realtime service a default `max_tokens` cap. Models
+whose name is treated as reasoning-capable (`gpt-5*`, `o1*`, `qwen3*`,
+`deepseek-r1*`, `deepseek-v3*`) receive `LLM_MAX_TOKENS_CAP_REASONING`, whose source
+default is 2048 and is environment-overridable; other models receive the normal
+cap. For Speaches, the factory constructs
+`SpeachesLLMSettings(model=model, max_tokens=max_tokens)`.
+
+Runtime summary supplies a separate one-shot Python argument `max_tokens=4000`;
+it does not necessarily replace the configured service-level field in the
+provider parameter dictionary (see section 5.4). Historical Qwen voicemail
+exposes `max_tokens=2048`. These are distinct source/historical observations,
+not a universal candidate policy. Candidate settings must be chosen and recorded
+before canonical evaluation; do not infer Granite limits from those observations.
 
 ### 3.3 Current MPS table
 
@@ -389,7 +413,7 @@ min_messages_after_summary = 2
 summarization_timeout = 30 seconds
 ```
 
-Pipecat's `LLMService._generate_summary()` passes `frame.target_context_tokens` directly as the request's `max_tokens` value:
+Pipecat's `LLMService._generate_summary()` passes `frame.target_context_tokens` directly as the one-shot Python inference argument `max_tokens`:
 
 ```python
 run_inference(
@@ -399,7 +423,40 @@ run_inference(
 )
 ```
 
-Therefore the canonical current production-shaped runtime-summary request uses **`max_tokens=4000`**, with a **30-second timeout**. `target_context_tokens` retains its semantic name in Pipecat, but the current implementation uses its value as the actual per-request completion-token limit. Record these effective settings in the benchmark's production-fidelity metadata.
+Thus current runtime summary supplies **`max_tokens=4000`** as a Python argument,
+with a **30-second timeout**. The 4000 value affects constructed request
+parameters; it is not merely metadata.
+
+The corrected Stage 3 audit verified `run_inference_with_usage()` in the newer
+supplied `olegos-pipecat-develop (3).zip`,
+`src/pipecat/services/openai/base_llm.py`. `run_inference()` delegates to it.
+Parameter construction includes both the service `max_tokens` field and
+`max_completion_tokens`. The explicit one-shot argument sets
+`max_completion_tokens=4000` because that key exists; the method does **not**
+explicitly clear an already configured service-level `max_tokens`. With current
+Qwen source defaults, the constructed dictionary can therefore contain both:
+
+```text
+max_tokens = <service cap; source default 2048 for reasoning models, environment-overridable>
+max_completion_tokens = 4000
+```
+
+This describes parameters before SDK/provider handling, not a claim that current
+production necessarily sends only `max_completion_tokens=4000`. The method also
+disables streaming and removes stream_options. The exact wheel-to-source commit
+mapping remains unverified.
+
+All 56 frozen historical context-summary observations have empty
+`modelParameters` (`{}`). Their exact historical wire token-limit fields are
+therefore not independently known. This uncertainty is separate from the trace
+transcript reconstruction caveat in section 1.1.
+
+Stage 3A deliberately normalizes candidate benchmark requests to exactly one
+token-limit field: `max_tokens` or `max_completion_tokens`. This avoids ambiguous
+dual-limit behavior; it does not claim byte-for-byte reproduction of the current
+product provider parameter dictionary. Product source settings remain provenance
+for choosing per-task candidate configuration later. No Granite canonical
+field/value is selected here.
 
 ## 5.5 Prompt contract
 
@@ -499,6 +556,11 @@ llm-context-summarization
 ```
 
 The underlying Pipecat `_generate_summary()` reports OOB usage under a dedicated usage label. API tracing captures only the labelled OOB report so a normal live dialogue completion that finishes during background summarization is not accidentally attributed to the summary.
+
+`api/services/workflow/pipecat_engine_context_summarizer.py` reconstructs the
+trace transcript after generation against the then-current context. Historical
+trace/request wire equality therefore has the qualification in section 1.1;
+this does not change selection, formatting, timeout, or application behavior.
 
 The standalone benchmark does not need Langfuse, but result records must keep each request's task identity unambiguous.
 
@@ -860,7 +922,7 @@ Must include:
 
 ---
 
-# 8. OOB task 5 — QA-support summaries
+# 8. Supporting LLM operations within QA — summaries
 
 There are two related summary jobs in the current QA pipeline and they should not be conflated with runtime context compaction.
 
@@ -933,8 +995,8 @@ These summaries are generated once per workflow definition when absent and then 
 The benchmark should have separate subtypes:
 
 ```text
-qa_support_previous_conversation
-qa_support_node_script
+qa_conversation_summary
+qa_node_summary
 ```
 
 Scoring should emphasize factual coverage required for downstream QA and hallucination avoidance rather than lexical overlap alone.
@@ -1063,6 +1125,14 @@ future candidate server
 ```
 
 The benchmark should not hard-code a private company endpoint.
+
+Stage 3A validates endpoint aliases as explicit safe experiment identifiers and
+projects allowlisted nonsecret configuration/server metadata for identity. Literal
+URLs and URL-derived hashes are never persisted or included in identity. Canonical
+configuration requires declared server identity beyond alias; operators must
+update that identity for material server changes. A URL-only change intentionally
+does not affect run ID. The precise bounded metadata policy is documented in
+README. No client, runner, or result persistence exists in Stage 3A.
 
 The server/client contract should support, at minimum:
 
@@ -1217,7 +1287,10 @@ These decisions belong in `CASE_MATRIX.md` and the implementation plan. They sho
 
 The current source supports the planned **mini Olegos OOB lab** architecture.
 
-The five OOB workload families are already identifiable at their call sites, and the application knows which job it is executing. The benchmark therefore does not need an intent classifier or a replica of the Olegos workflow engine.
+The four product-level OOB areas and six source-derived benchmark task contracts
+are identifiable at their call sites. These are not new routing labels. The
+benchmark therefore does not need an intent classifier or a replica of the
+Olegos workflow engine. Historical replay bypasses the adapter path below.
 
 The correct research boundary is:
 

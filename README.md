@@ -1,9 +1,16 @@
 # OVP-36 OOB model benchmark
 
-Standalone research benchmark. **Stages 1–2:** strict schemas, TOML configuration,
+Standalone research benchmark. **Stages 1–3A:** strict schemas, TOML configuration,
 read-only JSONL dataset operations, versioned prompt contracts, and response
-parsing. Model execution, task adapters, scoring, reports, and serving remain
-unimplemented.
+parsing, plus immutable request preparation and pure identity primitives. Model
+client, runner, result persistence, task adapters, scoring, reports, and serving
+remain unimplemented.
+
+OVP-36 has four product-level OOB areas: extraction, runtime context summary,
+voicemail, and post-call QA. The benchmark has six source-derived task contracts:
+`extraction`, `context_summary`, `voicemail`, `qa`, `qa_conversation_summary`, and
+`qa_node_summary`. The last two are supporting QA operations. These task values
+are benchmark taxonomy, not current routing labels.
 
 The requirements are `docs/BENCHMARK_SPEC.md`, `docs/SOURCE_AUDIT.md`, and
 `docs/CASE_MATRIX.md`, together with the approved source corrections from plan
@@ -80,10 +87,15 @@ partial-suite development. No curated or replay data is created in Stage 1.
 The final OVP-34 replay target has 242 captured requests and outputs: 40
 extraction, 56 runtime summaries, 22 voicemail, 72 QA, and 52 QA
 previous-conversation summaries. Future replay reads a private local export and
-preserves exact captured model-facing messages, outputs, and task/span/provenance
-IDs. Historical outputs are baseline behavior, not automatic gold. Curated and
-adversarial requests will use source-aligned adapters. No replay loader or raw
-private replay data is included in Stage 2.
+preserves captured historical trace messages, outputs, and task/span/provenance
+IDs. These messages are the best available captured trace/model-facing evidence,
+not independently verified historical HTTP bytes. For the 56 runtime summaries,
+current tracing reconstructs the summary request after generation; historical
+wire equality is not independently proven. Keep those observations and their
+qualification; never regenerate them. Historical outputs are baseline behavior,
+not automatic gold. Curated/adversarial requests will use source-aligned adapters;
+historical replay bypasses adapters. No replay loader or private replay data is
+included.
 
 ## Configuration
 
@@ -105,6 +117,7 @@ model_env = "OVP36_MODEL"
 [generation]
 temperature = 0.0
 max_tokens = 4000
+token_limit_field = "max_tokens" # or "max_completion_tokens"
 top_p = 1.0
 # seed = 7
 ```
@@ -116,19 +129,108 @@ instead of their environment references, but not alongside them.
 
 API keys can only be supplied through environment references. URLs containing
 userinfo, query parameters, or fragments are rejected. Resolved endpoint values
-are excluded from ordinary serialization and repr; `redact_config(config)` saves
-the unresolved configuration. Keep local configuration and secrets out of Git.
+are excluded from ordinary serialization and repr. `redact_config(config)` retains
+its original unresolved-config semantics, including a literal URL when configured;
+it is **not** a persistence projection. Keep local configuration and secrets out
+of Git. Use `persistent_config_projection(config, resolved_model=...)` for safe
+identity metadata; it constructs an explicit allowlist without dumping config.
+It includes alias, requested model, generation, timeout, repetitions, concurrency,
+experiment label, evaluation designation, and declared safe server metadata.
+Literal endpoint URLs and URL-derived hashes are never persisted or used for
+request/run identity. Environment names/values and credentials are excluded.
 
-The generation limit is explicit for every configuration. The approved runtime
-summary contract uses **max_tokens=4000** and a **30-second timeout**; future
-task-aware configuration/adapters will enforce these canonical settings. This
-Stage 1 schema is task-neutral and does not infer a task from those numbers.
-Historical Qwen voicemail used max_tokens=2048; the product service factory's
-default cap depends on model identity. Neither fact assigns a Granite limit.
+Endpoint alias is explicit operator-declared safe experiment identity: 1–64
+ASCII letters/digits/underscore/hyphen/dot, beginning with a letter or digit.
+Traversal-like `..`, dotted IPv4 patterns, and obvious credential prefixes are
+rejected. Server metadata, persisted model names, and experiment labels allow
+1–200 ASCII letters/digits/underscore/hyphen/dot/plus, optionally one
+`namespace/name` separator; each segment starts with a letter or digit. URLs,
+absolute/traversal paths, IP patterns, controls/whitespace, credential assignments,
+and common token prefixes are rejected. At Stage 3A, `model_artifact_hash` and
+`chat_template_hash` are operator-declared safe identity metadata; their validation
+does not enforce a digest algorithm or length. If used, their concrete digest
+algorithm and format must be frozen before canonical serving metadata is populated.
+These checks cannot detect disguised secrets; supply deliberate nonsecret labels.
+
+Canonical configuration requires a checkpoint, revision, artifact hash, chat
+template hash, or runtime **and** runtime version. Exploratory configurations may
+leave these unknown. This is a minimum declaration, not proof of server equality:
+update alias or safe server metadata when material server behavior changes. A
+URL-only change with identical declared identity intentionally leaves run ID
+unchanged.
+
+The generation limit is explicit for every configuration. Current API
+`service_factory.py` gives non-realtime services a default `max_tokens` cap;
+`LLM_MAX_TOKENS_CAP_REASONING` defaults to 2048 for reasoning models such as Qwen3
+and is environment-overridable. Speaches receives this through
+`SpeachesLLMSettings(model=model, max_tokens=max_tokens)`.
+
+Runtime summary passes the explicit one-shot Python argument **max_tokens=4000**
+to Pipecat with a **30-second timeout**. Newer supplied Pipecat builds parameters
+containing both token-limit keys and sets `max_completion_tokens=4000` because
+that key exists. It does not clear the configured service `max_tokens`. With
+Qwen source defaults, the constructed dictionary can therefore contain both
+`max_tokens=2048` and `max_completion_tokens=4000` before SDK/provider handling.
+The 56 historical summary observations have empty `modelParameters` (`{}`), so
+their exact historical wire token-limit fields are not independently known.
+
+Stage 3A intentionally normalizes candidate benchmark requests to exactly one
+selected token-limit field to avoid ambiguous dual-limit behavior. This is not
+a claim of byte-for-byte reproduction of the product's provider parameter
+dictionary. Product settings remain provenance for later per-task candidate
+configuration; neither the source defaults nor the example above chooses
+Granite's canonical field/value. `token_limit_field` defaults to `max_tokens`
+only for backward compatibility with Stage 1 configs. Unset seed is omitted and
+stream is fixed false. Historical Qwen voicemail used max_tokens=2048; that
+separate observation does not assign a Granite limit either.
 
 No Granite checkpoint, quantization, or serving runtime is selected. Their
 configuration remains a decision before local serving. GB10/DGX access and
 hardware measurements follow local validation in a later stage.
+
+## Request preservation and identity (Stage 3A)
+
+`MessageSnapshot(messages)` accepts an ordered list of JSON objects, stores one
+canonical JSON string, and returns fresh graphs through `to_messages()`. It
+preserves missing versus null fields, unknown fields, nested structures, exact
+strings and tool arguments, tool calls, and tool-result IDs. Object keys may be
+sorted; arrays and string whitespace are never normalized. Non-finite numbers,
+non-string keys, tuples, and other non-JSON values are rejected. This preserves
+JSON semantics, not original serialization bytes. `ContextMessage` is unchanged.
+
+The two preparation functions are separate:
+
+- `CapturedReplayRequest` → `prepare_captured_request()` → `PreparedRequest`:
+  verifies the supplied captured fingerprint, preserves the same snapshot, and
+  attaches explicit candidate settings. Historical generation/output remain
+  provenance only. No contract rendering or task-schema conversion occurs.
+- Already-created message objects → `prepare_generated_request()` →
+  `PreparedRequest`: accepts curated/adversarial metadata and candidate settings;
+  rejects `ovp34_replay`. Future adapters supply these messages.
+
+`PreparedRequest.to_request_body()` builds data only: model, messages, temperature,
+one completion limit, top_p, optional seed, and stream=False. There are no
+top-level tools/tool_choice fields. Message-level tool fields remain intact.
+Private snapshots, historical outputs/settings, and qualifications are hidden
+from request repr and ordinary model serialization. Dispatch data is private;
+later manifests should reference case/provenance IDs and fingerprints instead
+of copying historical inputs. Generic model serialization is not a manifest.
+
+`identity.py` uses SHA-256 with `ovp36-v1:<domain>` plus a NUL separator and
+canonical JSON. Domains separate messages, request, safe-config, and run hashes.
+`canonical_json_bytes()` sorts keys, retains sequence/string/type distinctions,
+and uses deterministic ASCII JSON escapes. This convention is versioned, not an
+RFC 8785 implementation. `fingerprint_messages()` hashes messages only;
+`fingerprint_request()` hashes dispatch data only; `fingerprint_safe_config()`
+hashes the explicit persistent config projection.
+
+`make_run_id()` receives dataset hash, ordered plan hash, safe config fingerprint,
+requested model, alias, server metadata, relevant contract hashes, harness-code
+fingerprint, and dependency-lock fingerprint explicitly. It never inspects Git,
+files, environment, timestamps, URLs, or credentials. Callers must supply the
+matching validated config fingerprint and identity components. `ExecutionKey`
+contains run ID, case ID, request fingerprint, and zero-based repetition index.
+These primitives perform no execution, result writing, or resume behavior.
 
 ## Prompt contracts (Stage 2)
 

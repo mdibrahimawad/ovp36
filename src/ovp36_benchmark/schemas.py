@@ -7,6 +7,7 @@ read-only. Dataset functions never modify their inputs.
 
 from enum import StrEnum
 import math
+import re
 from typing import Annotated, Literal, Self
 from urllib.parse import urlsplit
 
@@ -20,6 +21,33 @@ EnvName = Annotated[str, StringConstraints(pattern=r"^[A-Za-z_][A-Za-z0-9_]*$")]
 PositiveInt = Annotated[int, Field(gt=0)]
 PositiveNumber = Annotated[float, Field(gt=0)]
 Scalar = str | int | float | bool | None
+
+
+def validate_safe_identifier(value: str) -> str:
+    """Bounded operator labels, not endpoint addresses or filesystem paths."""
+    if (not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,63}", value)
+            or ".." in value or re.search(r"\d+\.\d+\.\d+\.\d+", value)
+            or re.match(r"(?i)(?:sk-|hf_|ghp_|github_pat_|xox[baprs]-|AKIA)", value)):
+        raise ValueError("expected a safe identifier of at most 64 characters")
+    return value
+
+
+def validate_safe_metadata(value: str) -> str:
+    """Allow versions and optional namespace/name, never runtime config blobs.
+
+    This rejects obvious credential formats, not arbitrary disguised secrets;
+    operators must deliberately supply nonsecret identity labels.
+    """
+    if (len(value) > 200
+            or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.+-]*(?:/[A-Za-z0-9][A-Za-z0-9_.+-]*)?", value)
+            or ".." in value or re.search(r"\d+\.\d+\.\d+\.\d+", value)
+            or re.match(r"(?i)(?:sk-|hf_|ghp_|github_pat_|xox[baprs]-|AKIA)", value)):
+        raise ValueError("expected bounded nonsecret metadata, optionally namespace/name")
+    return value
+
+
+SafeIdentifier = Annotated[str, AfterValidator(validate_safe_identifier)]
+SafeMetadata = Annotated[str, AfterValidator(validate_safe_metadata)]
 
 
 def _finite_json(value: PydanticJsonValue) -> PydanticJsonValue:
@@ -461,7 +489,7 @@ def validate_base_url(value: str) -> str:
 
 
 class EndpointConfig(StrictModel):
-    alias: NonEmpty
+    alias: SafeIdentifier
     base_url: NonEmpty | None = None
     base_url_env: EnvName | None = None
     model: NonEmpty | None = None
@@ -485,19 +513,34 @@ class EndpointConfig(StrictModel):
 class GenerationConfig(StrictModel):
     temperature: Annotated[float, Field(ge=0)] = 0.0
     max_tokens: PositiveInt
+    # Backward-compatible harness wire default, not a candidate quality policy.
+    token_limit_field: Literal["max_tokens", "max_completion_tokens"] = "max_tokens"
     seed: int | None = None
     top_p: Annotated[float, Field(gt=0, le=1)] = 1.0
 
+    def request_parameters(self) -> dict[str, float | int]:
+        """Exactly one completion limit; an unspecified seed is omitted."""
+        parameters = {"temperature": self.temperature, "top_p": self.top_p,
+                      self.token_limit_field: self.max_tokens}
+        if self.seed is not None:
+            parameters["seed"] = self.seed
+        return parameters
+
 
 class ServerMetadata(StrictModel):
-    runtime: NonEmpty | None = None
-    runtime_version: NonEmpty | None = None
-    model_checkpoint: NonEmpty | None = None
-    model_revision: NonEmpty | None = None
-    model_artifact_hash: NonEmpty | None = None
-    quantization: NonEmpty | None = None
-    chat_template_hash: NonEmpty | None = None
+    runtime: SafeMetadata | None = None
+    runtime_version: SafeMetadata | None = None
+    model_checkpoint: SafeMetadata | None = None
+    model_revision: SafeMetadata | None = None
+    model_artifact_hash: SafeMetadata | None = None
+    quantization: SafeMetadata | None = None
+    chat_template_hash: SafeMetadata | None = None
     context_limit: PositiveInt | None = None
+
+    def require_canonical_identity(self) -> None:
+        if not (self.model_checkpoint or self.model_revision or self.model_artifact_hash
+                or self.chat_template_hash or (self.runtime and self.runtime_version)):
+            raise ValueError("canonical evaluation requires declared safe server identity")
 
 
 class RunConfig(StrictModel):
@@ -509,6 +552,12 @@ class RunConfig(StrictModel):
     experiment_label: NonEmpty
     evaluation: Literal["canonical", "exploratory"]
     server: ServerMetadata = Field(default_factory=ServerMetadata)
+
+    @model_validator(mode="after")
+    def canonical_identity(self) -> Self:
+        if self.evaluation == "canonical":
+            self.server.require_canonical_identity()
+        return self
 
 
 class BenchmarkError(StrictModel):

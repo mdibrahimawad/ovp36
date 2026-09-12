@@ -6,15 +6,18 @@ from collections.abc import Mapping
 from pathlib import Path
 import tomllib
 
-from pydantic import Field, SecretStr
+from pydantic import Field, SecretStr, TypeAdapter
 
-from .schemas import EndpointConfig, RunConfig, StrictModel, validate_base_url
+from .schemas import (
+    EndpointConfig, RunConfig, SafeIdentifier, SafeMetadata, ServerMetadata,
+    StrictModel, validate_base_url,
+)
 
 
 class ResolvedEndpoint(StrictModel):
     """Runtime-only values are excluded even from ordinary model serialization."""
 
-    alias: str
+    alias: SafeIdentifier
     base_url: str = Field(exclude=True, repr=False)
     model: str = Field(exclude=True, repr=False)
     api_key: SecretStr | None = Field(default=None, exclude=True, repr=False)
@@ -58,3 +61,41 @@ def redact_config(config: RunConfig) -> dict[str, object]:
     fragment credentials are rejected rather than copied into saved metadata.
     """
     return config.model_dump(mode="json")
+
+
+def server_metadata_projection(server: ServerMetadata) -> dict[str, str | int]:
+    """Explicit allowlist, shared by safe config and pure run identity."""
+    fields = {
+        "runtime": server.runtime, "runtime_version": server.runtime_version,
+        "model_checkpoint": server.model_checkpoint, "model_revision": server.model_revision,
+        "model_artifact_hash": server.model_artifact_hash, "quantization": server.quantization,
+        "chat_template_hash": server.chat_template_hash, "context_limit": server.context_limit,
+    }
+    return {name: value for name, value in fields.items() if value is not None}
+
+
+def persistent_config_projection(config: RunConfig, *, resolved_model: str) -> dict[str, object]:
+    """Allowlisted experiment identity; no URL, URL hash, or environment names.
+
+    Supply the model resolved for dispatch, using a nonsecret model identifier.
+    Runtime model paths must instead be assigned a safe serving model name.
+    This function performs no environment or filesystem access.
+    """
+    model = TypeAdapter(SafeMetadata).validate_python(resolved_model, strict=True)
+    label = TypeAdapter(SafeMetadata).validate_python(config.experiment_label, strict=True)
+    if config.endpoint.model is not None and config.endpoint.model != model:
+        raise ValueError("resolved model differs from configured literal model")
+    generation = config.generation
+    settings = {
+        "temperature": generation.temperature, "max_tokens": generation.max_tokens,
+        "token_limit_field": generation.token_limit_field, "top_p": generation.top_p,
+    }
+    if generation.seed is not None:
+        settings["seed"] = generation.seed
+    return {
+        "endpoint_alias": config.endpoint.alias, "requested_model": model,
+        "generation": settings, "timeout_seconds": config.timeout_seconds,
+        "repetitions": config.repetitions, "concurrency": config.concurrency,
+        "experiment_label": label, "evaluation": config.evaluation,
+        "server": server_metadata_projection(config.server),
+    }

@@ -1,12 +1,15 @@
 import json
+import hashlib
 from pathlib import Path
 import tempfile
 import unittest
 
 from pydantic import ValidationError
 
-from ovp36_benchmark.config import load_config, redact_config, resolve_endpoint
-from ovp36_benchmark.schemas import EndpointConfig, RunConfig
+from ovp36_benchmark.config import (
+    load_config, persistent_config_projection, redact_config, resolve_endpoint,
+)
+from ovp36_benchmark.schemas import EndpointConfig, GenerationConfig, RunConfig, ServerMetadata
 
 
 CONFIG = '''
@@ -121,6 +124,110 @@ class ConfigTests(unittest.TestCase):
             self.path.write_text(content, encoding="utf-8")
             with self.assertRaises(ValidationError):
                 load_config(self.path)
+
+
+class PersistentConfigTests(unittest.TestCase):
+    def config(self, **updates):
+        return RunConfig(**({
+            "endpoint": EndpointConfig(alias="local-test", base_url_env="TEST_BASE_URL",
+                                       model_env="TEST_MODEL", api_key_env="TEST_API_KEY"),
+            "generation": GenerationConfig(max_tokens=137, token_limit_field="max_completion_tokens"),
+            "experiment_label": "stage-3a-synthetic", "evaluation": "exploratory",
+        } | updates))
+
+    def test_safe_aliases(self):
+        for alias in ("local_granite", "local-test", "gb10_research_a", "spark.dev.a", "A1"):
+            self.assertEqual(EndpointConfig(alias=alias, base_url_env="URL", model="m").alias, alias)
+
+    def test_unsafe_aliases_rejected(self):
+        # Reserved documentation addresses only; never real infrastructure.
+        for alias in ("http://192.0.2.1:8000", "https://example.invalid", "192.0.2.1:8000",
+                      "192.0.2.1", "/Users/example/server", "../server", "a..b", "user@host",
+                      "a b", "a\n", "a\t", "a/b", "a\\b", "a" * 65, ""):
+            with self.subTest(alias=alias), self.assertRaises(ValidationError):
+                EndpointConfig(alias=alias, base_url_env="URL", model="m")
+
+    def test_safe_metadata_versions_and_checkpoint_names(self):
+        server = ServerMetadata(runtime="test-runtime", runtime_version="1.4.0.dev8128+build",
+                                model_checkpoint="example-org/synthetic-model", model_revision="rev-a1",
+                                model_artifact_hash="a" * 64, quantization="Q4_K_M",
+                                chat_template_hash="b" * 64, context_limit=8192)
+        config = self.config(server=server, evaluation="canonical")
+        result = persistent_config_projection(config, resolved_model="example-org/synthetic-model")
+        self.assertEqual(result["server"], server.model_dump())
+
+    def test_obviously_unsafe_metadata_rejected_in_all_string_fields(self):
+        invalid = ("https://example.invalid/model", "192.0.2.1:8000", "192.0.2.1",
+                   "/tmp/model", "../model", "C:\\models\\model", "~/model", "a/b/c",
+                   "a\nb", "a\rb", "a\x00b", "a\tb", "Bearer synthetic-placeholder",
+                   "api_key=synthetic-placeholder", "user:password@host", "sk-synthetic-placeholder",
+                   "hf_synthetic_placeholder", "a" * 201)
+        for field in ServerMetadata.model_fields:
+            if field == "context_limit":
+                continue
+            for value in invalid:
+                with self.subTest(field=field, value=value), self.assertRaises(ValidationError):
+                    ServerMetadata(**{field: value})
+
+    def test_canonical_requires_useful_identity_exploratory_allows_unknown(self):
+        for server in (ServerMetadata(), ServerMetadata(runtime="test"),
+                       ServerMetadata(runtime_version="1.0"), ServerMetadata(quantization="q4", context_limit=8192)):
+            self.config(server=server)
+            with self.assertRaisesRegex(ValidationError, "canonical evaluation requires"):
+                self.config(evaluation="canonical", server=server)
+        for values in ({"model_checkpoint": "model"}, {"model_revision": "revision"},
+                       {"model_artifact_hash": "a" * 64}, {"chat_template_hash": "b" * 64},
+                       {"runtime": "test", "runtime_version": "1.0"}):
+            self.config(evaluation="canonical", server=ServerMetadata(**values))
+
+    def test_projection_exact_allowlist_and_no_environment_leaks(self):
+        config = self.config()
+        env = {"TEST_BASE_URL": "http://192.0.2.1:8000/v1", "TEST_MODEL": "synthetic-model",
+               "TEST_API_KEY": "synthetic-secret-do-not-save"}
+        resolved = resolve_endpoint(config.endpoint, env)
+        projected = persistent_config_projection(config, resolved_model=resolved.model)
+        self.assertEqual(projected, {
+            "endpoint_alias": "local-test", "requested_model": "synthetic-model",
+            "generation": {"temperature": 0.0, "max_tokens": 137,
+                           "token_limit_field": "max_completion_tokens", "top_p": 1.0},
+            "timeout_seconds": 30.0, "repetitions": 1, "concurrency": 1,
+            "experiment_label": "stage-3a-synthetic", "evaluation": "exploratory", "server": {},
+        })
+        text = json.dumps(projected)
+        for private in (env["TEST_BASE_URL"], env["TEST_API_KEY"], *env.keys(),
+                        "Authorization", "Bearer", "base_url", "api_key", "headers",
+                        hashlib.sha256(env["TEST_BASE_URL"].encode()).hexdigest()):
+            self.assertNotIn(private, text)
+        self.assertEqual(projected, persistent_config_projection(config, resolved_model=resolved.model))
+
+    def test_literal_url_change_has_no_effect_and_old_redaction_unchanged(self):
+        projections = []
+        for url in ("http://192.0.2.1:8000/v1", "http://192.0.2.2:9000/v1"):
+            config = self.config(endpoint=EndpointConfig(alias="local-test", base_url=url, model="m"))
+            projection = persistent_config_projection(config, resolved_model="m")
+            self.assertNotIn(url, json.dumps(projection))
+            self.assertEqual(redact_config(config)["endpoint"]["base_url"], url)
+            projections.append(projection)
+        self.assertEqual(*projections)
+
+    def test_projection_does_not_dump_then_redact(self):
+        from unittest.mock import patch
+        config = self.config()
+        with patch.object(RunConfig, "model_dump", side_effect=AssertionError("unsafe dump")):
+            persistent_config_projection(config, resolved_model="m")
+
+    def test_model_label_and_seed_persistence_policy(self):
+        for model in ("https://example.invalid", "/tmp/model", "Bearer synthetic-placeholder"):
+            with self.assertRaises(ValidationError):
+                persistent_config_projection(self.config(), resolved_model=model)
+        for label in ("/tmp/experiment", "a\nb", "api_key=synthetic"):
+            with self.assertRaises(ValidationError):
+                persistent_config_projection(self.config(experiment_label=label), resolved_model="m")
+        config = self.config(generation=GenerationConfig(max_tokens=4, seed=0))
+        self.assertEqual(persistent_config_projection(config, resolved_model="m")["generation"]["seed"], 0)
+        endpoint = EndpointConfig(alias="test", base_url_env="URL", model="literal")
+        with self.assertRaisesRegex(ValueError, "differs"):
+            persistent_config_projection(self.config(endpoint=endpoint), resolved_model="other")
 
 
 if __name__ == "__main__":
