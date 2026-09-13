@@ -106,3 +106,30 @@ class ExecutionKey(StrictModel):
     case_id: SafeIdentifier
     request_fingerprint: SHA256
     repetition_index: Annotated[int, Field(ge=0)]
+
+
+def fingerprint_execution_plan(entries: list[dict[str, object]]) -> str:
+    """Hash ordered safe projections; duplicate detection belongs to the runner.
+
+    Reuse ExecutionKey field validators without including the circular run ID.
+    No request messages or other execution metadata are accepted here.
+    """
+    fields = ("case_id", "request_fingerprint", "repetition_index")
+    if type(entries) is not list or any(
+        type(entry) is not dict or entry.keys() != set(fields) for entry in entries
+    ):
+        raise ValueError("invalid_execution_plan_projection")
+    validators = {
+        name: TypeAdapter(ExecutionKey.model_fields[name].rebuild_annotation()) for name in fields
+    }
+    failure = None
+    try:
+        validated = [
+            {name: validators[name].validate_python(entry[name], strict=True) for name in fields}
+            for entry in entries
+        ]
+    except ValueError:
+        failure = ValueError("invalid_execution_plan_projection")
+    if failure is not None:
+        raise failure
+    return _fingerprint("execution-plan", validated)

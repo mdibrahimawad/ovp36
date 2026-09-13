@@ -136,8 +136,9 @@ The runner/client design must preserve two distinct request paths:
 - Curated/adversarial cases: Olegos-shaped task input -> source-aligned adapter -> generated model-facing messages.
 
 Stage 3A implements separate captured/generated preparation paths and immutable
-transport snapshots. No replay loader, model client, runner, or result persistence
-is implemented yet. The strict curated task-input schemas remain separate.
+transport snapshots. Stages 3B–3D add the one-shot client, private persistence,
+and sequential prepared-request runner. Replay loading and task adapters remain
+unimplemented; strict curated task-input schemas remain separate.
 
 Historical baseline output is reference behavior, NOT automatically ground truth.
 
@@ -708,7 +709,7 @@ The benchmark runner MUST support:
 - configurable endpoint/model
 - sequential quality mode
 - controlled concurrency performance mode
-- bounded retries for transport failures
+- any future bounded transport-retry policy requires separate review and changed harness/run identity; Stage 3D v1 has no automatic retries
 - timeout classification
 - resume without overwriting prior results
 - machine-readable JSONL result output
@@ -716,13 +717,47 @@ The benchmark runner MUST support:
 
 A failed request is a benchmark result, not something silently dropped.
 
-Stage 3C supplies persistence only; Stage 3D orchestration/retry policy remains
-unimplemented. Each returned `AttemptResult` must be durably appended as an
-`attempt` before the later runner decides retry/finalization. Per-execution
+Stage 3C supplies persistence; Stage 3D v1 implements sequential prepared-request
+execution with `MAX_ATTEMPTS = 1`, an explicit benchmark normalization rather
+than a claim of product retry fidelity. Each fresh execution calls `send_once()`
+once, durably appends attempt zero, and finalizes it for every returned status.
+`retryable` remains unchanged evidence only. There are no retries, delays,
+backoff, jitter, or artificial cancellation sleeps. Per-execution
 `attempt_index` is contiguous from zero and separate from `repetition_index` and
 `ExecutionKey`. A `finalized` event references the latest attempt. Only finalized
 keys are completed, including finalized failures; unfinished evidence is retained.
 Persistence does not add new Stage 3B result cross-field invariants.
+
+Before opening journal artifacts, Stage 3D snapshots plan order, validates strict
+prepared execution items and repetition bounds, computes actual request hashes
+and execution keys, rejects duplicates, requires request model equality with
+the manifest requested model and concurrency exactly one, and checks the full
+ordered execution-plan hash. The public `fingerprint_execution_plan()` uses the
+existing versioned `execution-plan` hash domain over exactly `case_id`,
+`request_fingerprint`, and `repetition_index`, preserving list order. Empty plans
+must match the hash of `[]`. No separate message hash validation is required.
+
+After opening, all persisted keys must belong to the full supplied plan before
+any dispatch. Finalized executions are skipped, including failures and valid
+multi-attempt histories. Exactly one unfinished attempt is finalized without
+resending regardless of status; more than one unfinished attempt is incompatible
+and raises safe `RunnerValidationError` before dispatch. Append/finalization
+failures stop immediately. Reopening after uncertain writes trusts strict journal
+state, whether finalized, unfinished, or corrupt. Client bugs and cancellation
+propagate without synthetic evidence. A crash before durable evidence can still
+cause resend on restart.
+
+The caller owns the injected client; the runner owns and always closes its journal.
+Client URL/alias correspondence, timeout, and physical-server identity remain
+caller composition responsibilities; the runner does not inspect private client
+or journal fields. `RunSummary` has only strict nonnegative counts `planned`,
+`skipped_completed`, `resumed_unfinished`, `attempts_sent`, `executions_finalized`,
+`successes`, and `failures`. Counts are per invocation, with
+`planned == skipped_completed + executions_finalized` and
+`executions_finalized == successes + failures`; they are not quality metrics.
+No summary file is persisted. New translated validation errors have safe text
+and neither exception cause nor context. Stage 3D adds no dataset loading,
+adapters, parsing, scoring, reports, quality gates, or serving.
 
 Journal reading fails closed on corrupt framing, JSON/UTF-8/schema violations,
 duplicate keys, non-finite numbers, or invalid event sequences. Even valid JSON
@@ -763,6 +798,11 @@ This is explicit candidate request normalization to avoid ambiguous dual-limit
 behavior, not byte-for-byte reproduction of the product's provider parameter
 dictionary. Product runtime-summary 4000 remains source provenance, not a
 universal limit or a selected Granite canonical field/value.
+
+Stage 3D does not require per-request generation to equal manifest generation.
+Manifest generation is run-level declared/default metadata. Actual prepared
+settings are preserved and identity-bound through request fingerprint → ordered
+execution-plan hash → run ID. The run still requires one declared requested model.
 
 Quality runs SHOULD default to deterministic or near-deterministic generation where the server/model supports it.
 

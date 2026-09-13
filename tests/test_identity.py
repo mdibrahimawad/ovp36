@@ -8,7 +8,7 @@ from pydantic import ValidationError
 from ovp36_benchmark.config import resolve_endpoint
 from ovp36_benchmark.identity import (
     ExecutionKey, IDENTITY_VERSION, canonical_json_bytes, fingerprint_messages,
-    fingerprint_request, fingerprint_safe_config, make_run_id,
+    fingerprint_request, fingerprint_safe_config, make_run_id, fingerprint_execution_plan,
 )
 from ovp36_benchmark.requests import prepare_generated_request
 from ovp36_benchmark.schemas import EndpointConfig, GenerationConfig, RunConfig, ServerMetadata, Source, Task
@@ -34,6 +34,49 @@ def run_components(**updates):
 
 
 class IdentityTests(unittest.TestCase):
+    def test_stage_3a_identity_golden_digests_unchanged(self):
+        messages = [{"role": "user", "content": " x "}]
+        request = prepare_generated_request(messages, case_id="x", task=Task.QA,
+            source=Source.CURATED, model="model-a", generation=GenerationConfig(max_tokens=137))
+        self.assertEqual(fingerprint_messages(messages),
+                         "a884c388d6130007c7d5baee2aa475074b96accbc1894bdd87a309d56715cebb")
+        self.assertEqual(fingerprint_request(request),
+                         "3f65fb74cd450622a67275b3e94edaadc49a2a30d4a29c2ac317b45c6c825f5e")
+        self.assertEqual(fingerprint_safe_config(config(), resolved_model="synthetic-model"),
+                         "cbbb1ce399bc1e227bf34b61214c2cc9a3ddee1988bc7af66ef56de2f73dfcb4")
+        self.assertEqual(make_run_id(**run_components()),
+                         "36d1809a1a8d344d32476494bcddddde5f280e448b6c76c97ea762cb8f651870")
+
+    def test_execution_plan_digest_and_order(self):
+        entry = dict(case_id="case-a", request_fingerprint="a" * 64, repetition_index=0)
+        digest = fingerprint_execution_plan([entry])
+        self.assertEqual(digest, "1250d7f71ac76011a0fd7b7d7cfced7e8b6e9d227c8b635bd025eda9e71fbcf3")
+        self.assertEqual(digest, fingerprint_execution_plan([dict(reversed(list(entry.items())))]))
+        for change in ({"case_id": "case-b"}, {"request_fingerprint": "b" * 64}, {"repetition_index": 1}):
+            other = entry | change
+            self.assertNotEqual(digest, fingerprint_execution_plan([other]))
+            self.assertNotEqual(fingerprint_execution_plan([entry, other]),
+                                fingerprint_execution_plan([other, entry]))
+        # Duplicates are valid projections; only the runner rejects duplicate executions.
+        self.assertNotEqual(digest, fingerprint_execution_plan([entry, entry]))
+        self.assertNotEqual(digest, fingerprint_execution_plan([]))
+
+    def test_execution_plan_strict_projection_and_safe_errors(self):
+        entry = dict(case_id="case-a", request_fingerprint="a" * 64, repetition_index=0)
+        malformed = [None, "private-marker", (), {}, [None], [list(entry)],
+                     [entry | {"messages": "private-marker"}],
+                     [{key: value for key, value in entry.items() if key != "case_id"}]]
+        for field, values in {"case_id": ["../private-marker", "", 1],
+                              "request_fingerprint": ["private-marker", "A" * 64, 12],
+                              "repetition_index": [True, "0", -1, 0.0, None]}.items():
+            malformed.extend([[entry | {field: value}] for value in values])
+        for value in malformed:
+            with self.subTest(value=value), self.assertRaises(ValueError) as caught:
+                fingerprint_execution_plan(value)
+            self.assertEqual(str(caught.exception), "invalid_execution_plan_projection")
+            self.assertIsNone(caught.exception.__cause__)
+            self.assertIsNone(caught.exception.__context__)
+
     def test_canonical_key_order_and_versioned_domain(self):
         first, second = [{"b": 2, "a": 1}], [{"a": 1, "b": 2}]
         self.assertEqual(canonical_json_bytes(first), b'[{"a":1,"b":2}]')

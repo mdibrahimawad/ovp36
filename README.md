@@ -1,10 +1,11 @@
 # OVP-36 OOB model benchmark
 
-Standalone research benchmark. **Stages 1–3C:** strict schemas, TOML configuration,
+Standalone research benchmark. **Stages 1–3D:** strict schemas, TOML configuration,
 read-only JSONL dataset operations, versioned prompt contracts, and response
 parsing, immutable request preparation, pure identity primitives, and a common
-one-shot AsyncOpenAI client, immutable run manifests, and private result journals.
-Runner, task adapters, scoring, reports, and serving remain unimplemented.
+one-shot AsyncOpenAI client, immutable run manifests, private result journals,
+and a sequential prepared-request runner. Task adapters, replay loading, scoring,
+reports, and serving remain unimplemented.
 
 OVP-36 has four product-level OOB areas: extraction, runtime context summary,
 voicemail, and post-call QA. The benchmark has six source-derived task contracts:
@@ -45,7 +46,7 @@ or external services.
 defines explicit `model`, `adapter_control`, `response_contract`, and
 `transport_contract` exercises. Contract assertions cannot substitute for gold
 in model exercises. Result foundation schemas require an exercise identity;
-aggregation and execution are deferred.
+aggregation and case-to-request execution wiring are deferred.
 
 - Models reject unknown fields and incorrect primitive types. JSON arrays become
   tuples; JSON enum strings become enum values. Direct Python construction uses
@@ -100,7 +101,7 @@ included.
 
 ## Configuration
 
-This example describes the schema; there is no executable benchmark runner yet:
+This example describes the schema; there is no benchmark CLI or dataset-to-runner wiring yet:
 
 ```toml
 experiment_label = "local-development"
@@ -282,8 +283,8 @@ zero remains zero, and missing totals are never derived. Malformed completion
 envelopes/counts produce non-retryable protocol errors; empty/null content and
 poor task text can still be transport successes. Error results contain only safe
 classification fields, never exception objects or provider error bodies. HTTP
-408/429/500/502/503/504 and connection/timeouts are marked retryable for a future
-runner; redirects and other HTTP statuses are not retried.
+408/429/500/502/503/504 and connection/timeouts are marked retryable as evidence;
+the Stage 3D v1 runner performs no automatic retries, regardless of this flag.
 
 OpenAI 2.54.0 can coerce malformed nested usage values (`true` to `1`, `"2"` to
 `2`). Before SDK parsing, the transient raw response's `http_response.json()`
@@ -301,8 +302,8 @@ produces `invalid_response_json`, and a non-object top level produces
 Provider-controlled response text is hidden from repr but remains available to
 later parsing. Ordinary result serialization is **not** a safe persistence
 projection. Stage 3C applies the explicit private storage projection below.
-Stage 3D execution/retry orchestration, adapters, and replay loading remain
-unimplemented.
+Stage 3D executes prepared requests as described below; adapters and replay
+loading remain unimplemented.
 
 ## Local persistence (Stage 3C)
 
@@ -335,9 +336,9 @@ result; `finalized` references the latest recorded attempt without duplicating
 its output. `attempt_index` starts at zero and is contiguous per `ExecutionKey`;
 it is separate from `repetition_index` and is not part of execution identity.
 Only finalized keys enter `completed_keys()`, including finalized failures.
-Unfinished attempts remain readable. The later runner must durably record each
-returned result before deciding whether to retry or finalize; Stage 3C makes
-neither decision and adds no cross-field constraints to Stage 3B result semantics.
+Unfinished attempts remain readable. The Stage 3D v1 runner durably records each
+returned result before finalizing it; Stage 3C itself makes neither retry nor
+finalization decisions and adds no cross-field constraints to Stage 3B results.
 
 Candidate `raw_content` is preserved exactly, including private-looking text,
 only in ignored private journal artifacts. It is not redacted or keyword-scanned
@@ -374,6 +375,74 @@ write/fsync failure poisons the writer until close/reopen and strict validation.
 This is not HTTP/filesystem transactionality, exactly-once inference, universal
 power-loss protection, or concurrent-writer safety: a model call can happen before
 durable evidence exists. No database, new dependency, or timestamps are introduced.
+
+## Sequential prepared-request execution (Stage 3D)
+
+`runner.py` exposes frozen strict `PlannedExecution(request, repetition_index)`,
+`RunSummary`, safe `RunnerValidationError`, and the asynchronous function:
+
+```python
+summary = await run_plan(
+    plan, client=client, results_root=results_root, expected_manifest=expected_manifest,
+)
+```
+
+The caller supplies an ordered sequence of already-created `PlannedExecution`
+objects and owns the `ModelClient`; the runner never closes it. The runner owns
+the `ResultJournal` it opens and closes it on completion, persistence errors,
+unexpected client exceptions, and cancellation. It uses public APIs only.
+There is no dataset loading, prompt rendering, parsing, scoring, or server startup.
+Captured requests remain on the direct prepared-request path without adapters.
+
+Build the manifest's `ordered_execution_plan_hash` using the public
+`identity.fingerprint_execution_plan([item.identity_projection() for item in plan])`.
+Each entry has exactly `case_id`, `request_fingerprint`, and `repetition_index`;
+the versioned hash domain is `execution-plan`. List order matters; object-key
+order does not. The helper validates existing identity field semantics, while
+the runner rejects duplicate execution keys. No run ID or private payload is
+included in the plan projection.
+
+Before opening any artifacts, the runner snapshots plan order, validates items
+and repetition bounds, computes actual request fingerprints/execution keys,
+rejects duplicates, checks request model equality with the manifest's requested
+model, requires concurrency exactly one, and checks the full ordered plan hash.
+An empty plan must match the hash of `[]`. After opening the journal, every
+persisted key must belong to the full supplied plan, and every unfinished
+execution must have at most one recorded attempt, before any model dispatch.
+
+Per-request generation settings are preserved and need not equal manifest
+generation, which is run-level declared/default metadata. Effective settings
+are bound through request fingerprint → plan fingerprint → run ID. The runner
+does not attest that the injected client's URL, timeout, or physical server
+matches declared endpoint alias, timeout, or server metadata; those remain
+caller composition/preparation responsibilities.
+
+V1 fixes `MAX_ATTEMPTS = 1`: a fresh execution sends once, durably appends attempt
+zero, and finalizes it for every returned status. `retryable` remains unchanged
+evidence, never a retry decision. Empty/null output, bad JSON, missing usage, and
+finish reasons do not trigger another send. This is a **benchmark normalization**,
+not a claim of product retry fidelity. Any later retry policy needs separate
+review and different harness/run identity. There is no backoff, jitter, retry
+delay, or artificial cancellation sleep.
+
+Resume skips finalized keys, including failures and valid older multi-attempt
+histories. Exactly one unfinished attempt is finalized without resending,
+regardless of status; more than one unfinished attempt fails preflight. Append
+or finalization failure stops execution immediately. Unexpected client errors
+and cancellation propagate without fabricated evidence. After uncertain writes,
+strict reopening may find finalized, unfinished, or corrupt state; no automatic
+tail repair occurs. A crash before durable attempt evidence can cause a resend
+on restart, so this does not guarantee exactly-once model execution.
+
+`RunSummary` contains only seven nonnegative strict integer counts: `planned`,
+`skipped_completed`, `resumed_unfinished`, `attempts_sent`, `executions_finalized`,
+`successes`, and `failures`. Counts describe this invocation: sends made,
+unfinished executions resumed, and newly finalized terminal statuses. It enforces
+`planned == skipped_completed + executions_finalized` and
+`executions_finalized == successes + failures`. These are execution counts,
+not quality scores. No summary file or private content is added; candidate text
+remains only in the ignored private journal. New translated validation errors
+have safe messages and retain neither exception cause nor context.
 
 ## Prompt contracts (Stage 2)
 

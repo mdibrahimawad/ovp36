@@ -70,8 +70,21 @@ Each `attempt` records candidate transport evidence; `finalized` references the
 latest attempt without copying output again. Per-execution `attempt_index` starts
 at zero and is contiguous, separate from `repetition_index` and execution identity.
 Only finalized keys are completed, including finalized failures. Unfinished
-attempts remain available to later orchestration; Stage 3C has no retry policy
-and imposes no new Stage 3B result cross-field semantics.
+attempts remain available to orchestration; Stage 3C has no retry policy and
+imposes no new Stage 3B result cross-field semantics.
+
+Stage 3D v1 executes prepared requests sequentially with `MAX_ATTEMPTS = 1`,
+a benchmark normalization rather than product retry fidelity. Fresh executions
+send once, append attempt zero, and finalize every returned status; `retryable`
+is evidence only. Resume skips finalized executions and finalizes one unfinished
+attempt without resending. Multiple unfinished attempts or persisted keys outside
+the full supplied plan fail before dispatch. All plan identity, bounds, duplicate,
+model, and concurrency checks precede journal opening. Empty plans must match
+their ordered plan hash. Per-request generation remains unchanged and bound by
+request/plan/run identity; manifest generation is declared/default metadata,
+not a required per-request equality. Only safe invocation counters are returned,
+without a summary file or quality evaluation. Stage 3D adds no fixture/replay
+loader, adapter, scoring, or new case-matrix requirements.
 
 Candidate raw text is exact private ignored evidence, including any private
 material the candidate repeats. Historical messages, baseline outputs, and
