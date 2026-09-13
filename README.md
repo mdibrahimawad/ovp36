@@ -10,8 +10,8 @@ validation, model-only plan preparation, and review projections. Stage 4B2 adds
 the fixed 126-case synthetic curated/adversarial inventory and its review projection. The literal fixtures and draft semantic annotations still
 require external human review before candidate runs. Stage 4C1 adds deterministic
 evaluation, separate controls, post-run reporting, and private human-review
-revisions. The localhost test server and HTTP E2E smoke remain Stage 4C2 work;
-no candidate evaluation has been run.
+revisions. Stage 4C2 adds a deterministic localhost HTTP server and real
+AsyncOpenAI E2E smoke. No candidate evaluation has been run.
 
 OVP-36 has four product-level OOB areas: extraction, runtime context summary,
 voicemail, and post-call QA. The benchmark has six source-derived task contracts:
@@ -43,8 +43,9 @@ python3.12 -m venv .venv
 
 The uv lockfile pins runtime dependencies; the pip alternative honors the exact
 OpenAI/HTTPX pins and resolves other ranges from `pyproject.toml`. Tests use
-synthetic cases in temporary directories and need no network, model, credentials,
-or external services.
+synthetic cases in temporary directories and need no model, credentials, or
+external services. Stage 4C2 tests require permission to bind an ephemeral
+`127.0.0.1` socket; their guard rejects external connections and DNS.
 
 ## Data contracts
 
@@ -795,3 +796,45 @@ changes, and reuses an existing file only on exact byte equality. Artifacts unde
 `results/` remain ignored. `load_review_decisions()` reads strict finite JSONL and
 validates bindings. Neither evaluation nor publication prints private payloads.
 The existing client, runner, persistence, fixtures, and dependencies are unchanged.
+
+## Stage 4C2: deterministic local HTTP smoke
+
+`test_server.py` supplies `StubExchange(expected_request, response_body,
+status_code=200)` and the single-use `DeterministicChatServer(exchanges)` context
+manager. It snapshots exchanges as finite canonical JSON, binds only to
+`127.0.0.1:0` without hostname lookup, and exposes `base_url` ending in `/v1`.
+Only `POST /v1/chat/completions` is supported. One background thread compares
+each request against the next `PreparedRequest.to_request_body()` snapshot,
+including field presence, nulls, ordering, whitespace, and typed values. Token
+limits come from the prepared request; the server has no decoding policy.
+
+Request bodies require a valid Content-Length, are limited to 1 MiB, and have a
+bounded read deadline. Responses use JSON, byte Content-Length, and connection
+close. Access logs and server tracebacks are disabled. Harness failures retain
+safe codes; `assert_complete()` and normal context exit reject failures or
+unconsumed exchanges. Cleanup closes the listener and joins the server thread,
+including on exceptions. The server has no LLM, GPU, external API, streaming,
+model discovery, or production authentication.
+
+`tests/test_local_e2e.py` runs the real AsyncOpenAI HTTP transport through the
+unchanged runner, manifest/journal, evaluation, and reporting APIs. Exactly
+EX-001, CS-002, VM-001, QA-001, QS-001, and NS-006 are dispatched once in the main
+smoke as `ovp36-deterministic-stub`, with evaluation purpose `functional_stub`.
+Fixed responses live only in test code: they are plumbing fixtures, not benchmark
+gold or candidate results. EX-024 and CS-025 are evaluated separately as controls.
+Semantic checks initially remain pending; selected test-local review decisions
+exercise separate reviewed views without an automatic semantic judge.
+
+The test-local socket guard permits only the allocated loopback destination,
+blocks DNS, and records forbidden attempts even if a library catches the error.
+SDK environment settings are isolated and restored. All journal/report artifacts
+live in temporary directories and are removed. A matched HTTP 500 exchange proves
+one attempt and one finalization without a retry, leaving semantic quality
+unavailable. Local client latency is functional evidence only: it is not
+representative candidate latency, throughput, or hardware performance.
+
+Run just this boundary with:
+
+```sh
+.venv/bin/python -m unittest discover -s tests -p test_local_e2e.py -v
+```

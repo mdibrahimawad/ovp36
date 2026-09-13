@@ -1186,8 +1186,8 @@ The research phase is complete when:
 
 ## Stage 4C1 implemented evaluation boundary
 
-Stage 4C1 adds `evaluation.py` and `reporting.py`. The localhost deterministic
-server and real HTTP E2E smoke are Stage 4C2 work. No candidate run, model judge,
+Stage 4C1 adds `evaluation.py` and `reporting.py`. Stage 4C2 adds the localhost
+deterministic server and real HTTP E2E smoke described below. No candidate run, model judge,
 acceptance threshold, hardware threshold, or weighted cross-contract score is
 introduced by this implementation.
 
@@ -1257,3 +1257,45 @@ directories, fsyncs before atomic create-only publication and after directory
 changes, and never overwrites differing content. Existing identical artifacts may
 be reused after exact comparison. Unexpected harness bugs remain exceptions rather
 than candidate failures. The protected execution modules and dataset are unchanged.
+
+## Stage 4C2 implemented local HTTP boundary
+
+`test_server.py` is a deterministic test-only server, using one standard-library
+HTTP server thread bound to `127.0.0.1` with an OS-allocated ephemeral port.
+Startup avoids `HTTPServer`'s hostname lookup. It supports only
+`POST /v1/chat/completions`; it provides no model loading, GPU operations,
+external APIs, production authentication, model discovery, or streaming.
+
+Ordered exchanges contain a prepared request, fixed response JSON, and status.
+Construction snapshots both bodies as finite canonical JSON. Incoming JSON must
+match `PreparedRequest.to_request_body()` exactly in fields and values, preserving
+message order, whitespace, null/omitted distinctions, and bool/number distinctions.
+The prepared request supplies the token-limit field and value; no server token
+limit or decoding policy is hardcoded. Bodies require a valid Content-Length,
+have a 1 MiB maximum and a bounded read deadline. Responses carry JSON content
+type, byte Content-Length, and connection close. Access logs and server tracebacks
+are disabled; mismatches latch safe codes and fail normal context exit. Cleanup
+closes the listener and joins the thread even when another exception propagates.
+
+The main local smoke dispatches only EX-001, CS-002, VM-001, QA-001, QS-001, and
+NS-006, once each, in canonical order. It uses the unchanged AsyncOpenAI client
+over real HTTP, unchanged sequential runner and manifest/journal APIs, then
+`evaluate_run()` and aggregation. The loaded frozen dataset hash and selected
+six-entry plan identity bind the manifest. All six model evaluations use
+`purpose="functional_stub"` and model `ovp36-deterministic-stub`.
+
+Fixed responses exist only in test code. They are not benchmark gold or candidate
+results. EX-024 and CS-025 use separate control evaluation without dispatch or
+journal executions. Summary and grounding checks initially remain pending;
+selected test-local review decisions demonstrate a separate reviewed view without
+an automatic semantic judge or persisted reviewer identity. A matched fixed HTTP
+500 proves one journaled attempt and finalization without retry, with semantic
+quality unavailable under the existing evaluation policy.
+
+Tests isolate and restore SDK environment settings, block DNS, and permit outbound
+TCP only to the allocated loopback port. Forbidden attempts remain observable even
+if a library catches an exception. All execution and reporting artifacts live in
+temporary directories and are removed. No real model, external network, or
+candidate benchmark is involved. Local client-observed latency is functional
+evidence only, not representative latency, throughput, or hardware performance.
+Dataset annotations, evaluation policy, and dependencies are unchanged.
