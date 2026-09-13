@@ -199,6 +199,37 @@ Create difficult cases specifically intended to expose production-relevant failu
 - output-format pressure
 - facts appearing only once or far back in context
 
+### 6.4 Stage 4B implementation boundary
+
+Stage 4B1 implements source-aligned renderers and curated-dataset infrastructure,
+using small synthetic test-local fixtures. Stage 4B2 authors, validates, and
+human-reviews the final six JSONL files only after 4B1 external review.
+
+The frozen inventory is 126 scenarios: 106 model exercises and 20 controls.
+Per-contract total/model/control counts are 26/19/7 extraction, 26/21/5 runtime
+summary, 26/23/3 voicemail, 32/27/5 QA, 10/10/0 prior summary, and 6/6/0 node summary.
+Controls are inventory evidence, never model requests, candidate latency samples,
+or candidate quality denominator entries. Stage 4C reports them separately.
+
+Curated validation reuses BenchmarkCase and hash_dataset. It enforces lowercase
+IDs (for example curated-ex-001), reviewed matrix metadata and canonical order,
+contract/input/gold consistency, and evidence resolution relative to case.input.
+No general repr change or new curated hash domain is introduced. The only message
+role extension is developer for the source async-tool completion boundary.
+
+The complete loader reads six explicit task-named JSONL files in extraction,
+context_summary, voicemail, qa, qa_conversation_summary, qa_node_summary order,
+with ascending matrix ordinals in each. No final files are created during 4B1.
+prepare_curated_plan filters model exercises in this relative order and expands
+repetition-major. Every request uses the explicit resolved model and exactly
+config.generation; no generation_overrides interface or silent source-cap override
+exists. Prepared settings and order remain bound by existing request/plan identity.
+
+All six generated paths call prepare_generated_request. Historical replay stays
+on its unchanged captured path. No model execution, scoring, journal creation,
+server operation, or numerical acceptance policy is added by 4B1. Synthetic
+origin and the correctness of authored gold require human review before Granite.
+
 ## 7. Common case schema
 
 Each immutable benchmark case SHOULD contain at least:

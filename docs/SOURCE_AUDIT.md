@@ -321,6 +321,11 @@ Production cleanup rules:
 
 The benchmark adapter should reproduce these transformations for cases that include tool messages.
 
+The transition omission is an exact stripped-text comparison against
+`{"status": "done"}`, before JSON normalization. Compact `{"status":"done"}`
+does not match; it proceeds through metadata removal and is rendered as `{}`.
+Stage 4B1 tests both spellings and individual 2000-character truncation boundaries.
+
 ## 4.6 Prompt contract
 
 Production base system instruction:
@@ -546,6 +551,15 @@ After Olegos's six-or-fewer-message skip check, the underlying Pipecat utility s
 2. Preserve the last `min_messages_to_keep` messages outside the proposed summarization range. Olegos uses two.
 3. If an unresolved function/tool-call sequence occurs inside that range, stop before the earliest unresolved function call.
 
+The supplied Pipecat source scans only that proposed range. A tool response in
+the preserved tail does not resolve a call in the range. `IN_PROGRESS` and JSON
+objects with `type="async_tool", status="started"` remain pending. A matching
+`developer` message with `type="async_tool", status="finished", tool_call_id=...`
+resolves the pending call. LLMSpecificMessage objects are skipped during this scan
+without changing original indices. Stage 4B1 adds only the developer role to the
+typed fixture role set to represent this source behavior.
+
+
 The selected messages are formatted into a transcript, skipping `LLMSpecificMessage` objects. For each normal message:
 
 - use `msg.get("role", "unknown")`;
@@ -564,7 +578,7 @@ TOOL: {"status": "done"}
 TOOL_RESULT[call_id]: {"status": "done"}
 ```
 
-Do not deduplicate these entries or apply extraction's transition-tool omission to runtime summaries. This is the source contract for a future adapter; Stage 2 does not implement this formatter.
+Do not deduplicate these entries or apply extraction's transition-tool omission to runtime summaries. Stage 2 froze this source contract; Stage 4B1 implements its formatter.
 
 The formatted transcript is sent using the `Conversation history:` wrapper shown above.
 
@@ -910,6 +924,17 @@ summary: short segment summary
 ```
 
 The benchmark should use this frozen contract as a production-shaped QA suite, while keeping the architecture configurable enough to load another QA prompt/label set later.
+
+Stage 4B1 rendering follows `qa/metrics.py` output field order:
+call_duration_seconds, num_turns, avg_latency_seconds, avg_ttfb_seconds,
+max_latency_seconds. The source uses `json.dumps(metrics, indent=2)`; per-node
+computation passes no explicit call duration. Transcript strings follow
+`qa/conversation.py::format_transcript`: `[1.0s] user: ...`, assistant equivalents,
+and `[1.0s] [tool_call]: name`. Fixtures supply this already-formatted text.
+`api/utils/template_renderer.py` substitutes once, then converts literal
+backslash-n sequences to actual newlines across the rendered system string.
+Inserted placeholder-looking text is not recursively substituted. This conversion
+does not apply to the separately constructed user transcript message.
 
 ## 7.6 Production-like parser
 

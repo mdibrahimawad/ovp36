@@ -132,7 +132,7 @@ Production fidelity requirements:
 | EX-012 | normal | yes | Relevant value appears in tool response | Retain value if production-normalized tool response is part of context |
 | EX-013 | normal | no | Tool response wrapped in `{"data": ...}` | Adapter exposes only `data` content as production does |
 | EX-014 | normal | no | Tool response has `status` and `status_code` wrappers | Wrapper fields removed before model-facing transcript |
-| EX-015 | normal | no | Transition tool response equals `{"status":"done"}` | Response omitted from extraction transcript |
+| EX-015 | normal | no | Stripped transition response equals exact `{"status": "done"}` | Omit exact spelling; compact `{"status":"done"}` instead normalizes to `{}` |
 | EX-016 | hard | no | Tool response above 2000 chars | Adapter truncates one tool response according to source behavior |
 | EX-017 | hard | yes | Long transcript with target facts near beginning | Correct fields retained despite distractors |
 | EX-018 | normal | yes | Number variable | Valid numeric value and correct type/semantic value |
@@ -190,7 +190,7 @@ Production fidelity requirements:
 | CS-017 | hard | no | Resolved tangent plus unresolved main issue | Tangent compressed/omitted; unresolved issue preserved |
 | CS-018 | adversarial | yes | Transcript contains unsupported claim bait | No hallucinated facts |
 | CS-019 | adversarial | yes | Similar names/numbers/dates across turns | No entity/value conflation |
-| CS-020 | hard | yes | Long context approaching candidate limits | Completes successfully or records explicit timeout/error; never silently truncates without metadata |
+| CS-020 | hard | yes | Fixed long synthetic context | Verify source-aligned construction and no unapproved adapter truncation; candidate limits/completion are not established in Stage 4B |
 | CS-021 | normal | no | Recent two messages are outside summarization slice | Adapter selects/preserves messages according to production rule |
 | CS-022 | hard | yes | Critical fact sits exactly near summary/preserved-message boundary | No loss or duplication that changes meaning |
 | CS-023 | hard | yes | New messages conceptually arrive after summary input snapshot | Adapter/unit test ensures snapshot/preserved-context semantics are represented correctly |
@@ -302,7 +302,7 @@ Production fidelity requirements:
 | QA-023 | hard | yes | Metrics contradict textual impression | Use both inputs; no unsupported claim |
 | QA-024 | normal | no | Whole-call fallback with no node IDs | Correctly evaluates whole transcript |
 | QA-025 | adversarial | yes | Keyword bait for several tags but no actual behavior | Avoid false positives |
-| QA-026 | adversarial | yes | Model invents evidence in tag reason | Evidence-grounding failure |
+| QA-026 | adversarial | yes | Supplied synthetic response invents evidence in tag reason | Response control for evidence-grounding failure; no candidate call |
 | QA-027 | normal | no | Markdown-wrapped JSON | Strict fail; production parser compatibility scored |
 | QA-028 | normal | no | Top-level array instead of dict | Production-like parser/coercion behavior recorded |
 | QA-029 | adversarial | no | Missing `tags` | Production default `[]`; schema/semantic score reflects missing content |
@@ -459,6 +459,42 @@ This is intentionally separate from the 242 captured OVP-34 replay observations.
 The suite can grow after the first implementation, but these IDs and their intended semantics should not be silently repurposed.
 
 ---
+
+## 10.1 Frozen exercise allocation and staged authoring
+
+Stage 4B1 implements adapters and inventory validation with test-local synthetic
+fixtures. Stage 4B2 authors the final 126 scenarios after 4B1 external review.
+No final data/curated/*.jsonl files are created during 4B1.
+
+| Family | Inventory | Model | Control |
+|---|---:|---:|---:|
+| Extraction | 26 | 19 | 7 |
+| Runtime summary | 26 | 21 | 5 |
+| Voicemail | 26 | 23 | 3 |
+| QA | 32 | 27 | 5 |
+| Prior summary | 10 | 10 | 0 |
+| Node summary | 6 | 6 | 0 |
+| Total | 126 | 106 | 20 |
+
+Frozen adapter controls: EX-013–016, CS-001, CS-021, CS-023.
+Frozen response controls: EX-024–026, CS-024, VM-022–024, QA-026–030.
+Frozen transport control: CS-025. All other entries are model exercises.
+These assignments must not be silently reclassified.
+
+IDs use lowercase source/family/ordinal spelling, e.g. curated-ex-001 and
+adversarial-ex-021; tags retain matrix:EX-001. Matrix difficulty and critical
+allocations are unchanged. Explicitly adversarial rows use source adversarial;
+other rows use curated. The JSONL file order is extraction, context_summary,
+voicemail, qa, qa_conversation_summary, qa_node_summary; each has ascending matrix
+ordinals. The loader validates rather than silently reorders this inventory.
+
+Only exercise.kind == model enters prepare_curated_plan, preserving relative
+order within each repetition. Full-suite execution count is 106 * repetitions.
+The 20 controls remain immutable inventory entries, excluded from candidate
+quality/latency denominators and reported separately in Stage 4C. All 126 authored
+cases require a human-review projection before any candidate run; gold cannot be
+chosen from candidate output. No final scenarios are authored by the allocation
+metadata or infrastructure tests in 4B1.
 
 # 11. Implementation order
 

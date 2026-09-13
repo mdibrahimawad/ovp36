@@ -154,7 +154,7 @@ class ToolCall(StrictModel):
 
 
 class ContextMessage(StrictModel):
-    role: Literal["system", "assistant", "user", "tool", "function"]
+    role: Literal["system", "assistant", "user", "tool", "function", "developer"]
     content: str | tuple[TextItem, ...] | None
     tool_calls: tuple[ToolCall, ...] = ()
     function_call: FunctionCall | None = None

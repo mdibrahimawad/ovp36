@@ -1,11 +1,13 @@
 # OVP-36 OOB model benchmark
 
-Standalone research benchmark. **Stages 1–4A:** strict schemas, TOML configuration,
+Standalone research benchmark. **Stages 1–4B1:** strict schemas, TOML configuration,
 read-only JSONL dataset operations, versioned prompt contracts, and response
 parsing, immutable request preparation, pure identity primitives, and a common
 one-shot AsyncOpenAI client, immutable run manifests, private result journals,
 and a sequential prepared-request runner with frozen OVP-34 replay loading and
-plan preparation. Task adapters, scoring, reports, and serving remain unimplemented.
+plan preparation. Stage 4B1 adds source-aligned curated adapters, inventory
+validation, model-only plan preparation, and review projections. Final curated
+case authoring (4B2), scoring, reports, and serving remain unimplemented.
 
 OVP-36 has four product-level OOB areas: extraction, runtime context summary,
 voicemail, and post-call QA. The benchmark has six source-derived task contracts:
@@ -58,20 +60,19 @@ aggregation and case-to-request execution wiring are deferred.
 - Extraction types are string, number, and boolean. Known gold must match the
   declared type; every missing field needs an explicit missing-value policy.
 - Voicemail input stores ordered `messages`, including assistant/tool contexts,
-  after the frozen system instruction. Prepending that instruction belongs to
-  the future adapter.
+  after the frozen system instruction. The curated adapter prepends that instruction.
 - The three summary gold types share one fact-annotation schema. Named categories
   reference required-fact IDs; correction pairs reference old/new facts.
 - QA gold uses a score target or an ordered acceptable range. Tags remain strings
   so a later frozen prompt contract can validate its vocabulary.
 - Evidence offsets are half-open character spans. Structural validation checks
-  pointers/offsets; resolving them against inputs belongs to fixture validation
-  when actual curated fixtures are added.
+  pointers/offsets; curated validation resolves them relative to case.input and checks span bounds.
 
 `load_cases(path_or_paths)` reads UTF-8 JSONL into a tuple of cases. It rejects
 invalid/blank lines, duplicate object keys, non-standard numeric constants,
 invalid schemas, and duplicate IDs, including across files. Errors identify the
-source file and line without echoing the raw fixture.
+file ordinal and line without paths, rejected values, or retained lower-level
+exception cause/context. Expected filesystem failures also become DatasetError.
 
 `select_cases(...)` intersects task/source/difficulty/critical/exercise filters;
 tag filtering requires all supplied tags. No filter means unrestricted; an empty
@@ -98,6 +99,71 @@ wire equality is not independently proven. Keep those observations and their
 qualification; never regenerate them. Historical outputs are baseline behavior,
 not automatic gold. Curated/adversarial requests will use source-aligned adapters;
 historical replay bypasses adapters. Private replay data is never included.
+
+## Curated preparation (Stage 4B1)
+
+Stage 4B1 implements machinery using small test-local synthetic fixtures only.
+Stage 4B2 will author and human-review the final 126 scenarios after adapter
+review. No final `data/curated/*.jsonl` files exist in 4B1.
+
+`dataset.py` provides `validate_curated_cases(cases, require_complete=False)`,
+`load_curated_cases(root)`, and `curated_review_rows(cases)`. Reuse BenchmarkCase
+and hash_dataset; public case repr and semantic hashing remain unchanged.
+Validation rechecks typed cases, loaded contract/task equality, synthetic tags,
+lowercase source/family/ordinal IDs, matrix category/difficulty/critical/exercise
+allocations, duplicate IDs, evidence pointers/spans, summary annotations, and
+source QA tag/metric vocabulary. It rejects noncanonical order rather than sorting.
+Synthetic origin and semantic correctness still require human review.
+
+The complete loader reads only these names under the explicitly supplied root:
+`extraction.jsonl`, `context_summary.jsonl`, `voicemail.jsonl`, `qa.jsonl`,
+`qa_conversation_summary.jsonl`, `qa_node_summary.jsonl`. Within each file, matrix
+ordinals ascend. A missing, incomplete, misfiled, or malformed inventory fails;
+no files are discovered, generated, or substituted. Partial validation supports
+small test fixtures and explicitly selected subsets in the same relative order.
+
+IDs use `curated-ex-001` / `adversarial-ex-021` spelling, with `matrix:EX-001`
+tags. Matrix metadata in code describes the frozen allocation, not authored
+scenarios. Explicitly adversarial matrix rows use source adversarial; the others
+use curated. Optional provenance uses safe `synthetic-...` references without
+historical run IDs. This is not a mechanism for sanitizing private source data.
+
+`adapters.py` provides six pure renderers, `select_summary_context`,
+`format_summary_transcript`, and the pure `apply_context_summary` control helper.
+Prompts come from the unchanged contracts catalog. Runtime selection recognizes
+pending async tools and developer completion messages, using original indices;
+no-summary selection produces None from render_runtime_summary. A model exercise
+with no request is an error, not a silently skipped model case.
+
+```python
+from ovp36_benchmark.dataset import load_curated_cases, hash_dataset, curated_review_rows
+from ovp36_benchmark.adapters import prepare_curated_plan
+from ovp36_benchmark.identity import fingerprint_execution_plan
+
+# After 4B2 authors the files; root/config/model are explicit caller inputs.
+cases = load_curated_cases(root)
+rows = curated_review_rows(cases)
+plan = prepare_curated_plan(cases, config=config, resolved_model=resolved_model)
+dataset_hash = hash_dataset(cases)
+plan_hash = fingerprint_execution_plan([item.identity_projection() for item in plan])
+```
+
+Preparation uses only prepare_generated_request, config.generation, and the
+explicit resolved candidate model. There is no generation_overrides API or
+implicit 4000-token override. Product runtime-summary 4000/30 seconds remain
+source provenance. Exactly one configured token-limit field is retained.
+
+The inventory contains 126 scenarios: 106 model exercises and 20 controls.
+Only model exercises enter the repetition-major plan, giving 106 * repetitions
+for the future complete suite. Controls never enter candidate quality or latency
+denominators. Stage 4C must evaluate/report controls separately. Preparation
+performs no client construction, runner execution, journal access, or scoring.
+
+Review rows contain IDs, contract/category, exercise, difficulty, critical flag,
+a short scenario, and gold summaries; they do not render or print prompts.
+All 126 authored cases need human review before any candidate run. Extraction
+policies, voicemail ambiguity, summary facts, QA score annotations, optional node
+behavior, and control assignments must be reviewed independently of model output.
 
 ## Historical replay preparation (Stage 4A)
 
@@ -551,8 +617,8 @@ voicemail prompt uses message context; the node-summary contract uses the
 source-known node-description algorithm documented in SOURCE_AUDIT. The full
 SkyAssist QA `system_template` preserves literal double-brace placeholders.
 `load_contract` exposes all these unchanged; `render_contract` refuses tasks
-requiring their future adapters, including QA substitution. History formatting
-and runtime-summary selection/application also remain deferred. Partial-contract
+requiring dedicated adapters, including QA substitution. Stage 4B1 supplies those
+adapters and history formatting/runtime-summary selection/application. Partial-contract
 inspection remains supported for explicitly incomplete resources; no current
 resource is marked partial.
 
