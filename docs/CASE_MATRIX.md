@@ -1,6 +1,6 @@
 # OVP-36 OOB Model Benchmark — Case Matrix
 
-Status: Draft v0.1 — freeze before implementation  
+Status: Fixed Stage 4B2 inventory — draft semantic annotations awaiting external human review
 Owner: Ibrahim Awad  
 Purpose: Enumerate the benchmark scenarios that must exist before Codex implements the runner/server.
 
@@ -10,7 +10,7 @@ This matrix is derived from `BENCHMARK_SPEC.md` and `SOURCE_AUDIT.md`.
 
 The implementation must not silently add, remove, or redefine benchmark semantics. If a case needs to change after implementation starts, update this document first.
 
-Each case will eventually become an immutable data fixture. Model outputs and scores must be stored separately.
+Each curated/adversarial case now has an immutable input fixture under data/curated. Model outputs and scores must be stored separately.
 
 The matrix has two complementary parts:
 
@@ -441,7 +441,7 @@ A later go/no-go threshold will be frozen before looking at candidate results.
 
 # 10. Minimum curated suite size
 
-The first implementation should target:
+The Stage 4B2 authored inventory contains:
 
 - Extraction: 26 cases
 - Runtime context summary: 26 cases
@@ -462,9 +462,13 @@ The suite can grow after the first implementation, but these IDs and their inten
 
 ## 10.1 Frozen exercise allocation and staged authoring
 
-Stage 4B1 implements adapters and inventory validation with test-local synthetic
-fixtures. Stage 4B2 authors the final 126 scenarios after 4B1 external review.
-No final data/curated/*.jsonl files are created during 4B1.
+Stage 4B1 adapters and inventory validation are complete. Following 4B1 external
+review, Stage 4B2 supplies all 126 synthetic scenarios in the six approved
+data/curated/*.jsonl files. Literal scenarios and draft semantic annotations
+remain subject to human review before candidate runs, especially VM-017–021 and
+all QA tag/sentiment/score annotations. No candidate output supplied these drafts.
+VM-021's null label is an insufficient-evidence annotation, not a third model
+label; its later metric treatment remains Stage 4C work.
 
 | Family | Inventory | Model | Control |
 |---|---:|---:|---:|
@@ -480,6 +484,13 @@ Frozen adapter controls: EX-013–016, CS-001, CS-021, CS-023.
 Frozen response controls: EX-024–026, CS-024, VM-022–024, QA-026–030.
 Frozen transport control: CS-025. All other entries are model exercises.
 These assignments must not be silently reclassified.
+
+The authored category totals are 109 curated and 17 adversarial. Critical counts
+are EX 18, CS 20, VM 20, QA 27, QS 9, NS 6: 100 total. The four critical controls
+are curated-ex-026, curated-cs-023, adversarial-cs-024, and adversarial-qa-026;
+96 model exercises are critical. No new weights or quality thresholds are added.
+QA-031 changes only node purpose relative to QA-001; QA-032 changes only prior
+context relative to QA-019. Tests preserve these exact input relationships.
 
 IDs use lowercase source/family/ordinal spelling, e.g. curated-ex-001 and
 adversarial-ex-021; tags retain matrix:EX-001. Matrix difficulty and critical

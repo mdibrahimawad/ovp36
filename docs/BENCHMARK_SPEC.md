@@ -138,8 +138,8 @@ The runner/client design must preserve two distinct request paths:
 Stage 3A implements separate captured/generated preparation paths and immutable
 transport snapshots. Stages 3B–3D add the one-shot client, private persistence,
 and sequential prepared-request runner. Stage 4A adds the historical replay loader
-and plan preparation; task adapters remain unimplemented and strict curated
-task-input schemas remain separate.
+and plan preparation. Stage 4B1 supplies adapters for the separate strict curated
+task-input schemas; Stage 4B2 supplies their synthetic inventory.
 
 Stage 4A uses the verified `oob_jobs.csv` as the explicit selected-ID and canonical
 case-order authority; raw JSONL supplies the captured messages. It validates all
@@ -201,9 +201,11 @@ Create difficult cases specifically intended to expose production-relevant failu
 
 ### 6.4 Stage 4B implementation boundary
 
-Stage 4B1 implements source-aligned renderers and curated-dataset infrastructure,
-using small synthetic test-local fixtures. Stage 4B2 authors, validates, and
-human-reviews the final six JSONL files only after 4B1 external review.
+Stage 4B1 source-aligned renderers and curated-dataset infrastructure are complete.
+Following adapter review, Stage 4B2 supplies the final fixed inventory in six
+synthetic JSONL files and validates construction, metadata, and evidence. External
+human semantic review of the literal fixtures remains required before candidate
+runs; authored draft judgments are not evidence of completed human review.
 
 The frozen inventory is 126 scenarios: 106 model exercises and 20 controls.
 Per-contract total/model/control counts are 26/19/7 extraction, 26/21/5 runtime
@@ -219,7 +221,9 @@ role extension is developer for the source async-tool completion boundary.
 
 The complete loader reads six explicit task-named JSONL files in extraction,
 context_summary, voicemail, qa, qa_conversation_summary, qa_node_summary order,
-with ascending matrix ordinals in each. No final files are created during 4B1.
+with ascending matrix ordinals in each. Stage 4B2 supplies these six files under
+data/curated. The authored inventory has 109 curated and 17 adversarial entries,
+with 100 critical entries (96 model exercises and four controls).
 prepare_curated_plan filters model exercises in this relative order and expands
 repetition-major. Every request uses the explicit resolved model and exactly
 config.generation; no generation_overrides interface or silent source-cap override
@@ -229,6 +233,18 @@ All six generated paths call prepare_generated_request. Historical replay stays
 on its unchanged captured path. No model execution, scoring, journal creation,
 server operation, or numerical acceptance policy is added by 4B1. Synthetic
 origin and the correctness of authored gold require human review before Granite.
+The Stage 4B2 suite encodes draft QA tag, sentiment, and score-band annotations,
+plus VM-017–021 review proposals. These require review against literal input before
+candidate evaluation, and must never be fitted to model output. VM-021's nullable
+label represents insufficient evidence, not a third classifier label; metric
+eligibility is deferred to Stage 4C. Summary gold uses facts and evidence rather
+than exact target prose. Runtime-summary required-fact evidence is checked against
+the actual source-selected slice, not just the full stored context.
+
+Stage 4B2 preparation verifies 106 executions for one repetition and 212 for two,
+with controls excluded and repetition-major order retained. All 126 review rows
+are available through curated_review_rows before any candidate run. Scoring,
+quality thresholds, model execution, and serving are outside this stage.
 
 ## 7. Common case schema
 

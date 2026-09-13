@@ -1,4 +1,4 @@
-"""Small synthetic unit fixtures, NOT the final 126 authored scenarios."""
+"""Infrastructure unit fixtures and the fixed, draft human-review inventory."""
 
 import io
 import json
@@ -254,3 +254,314 @@ class CuratedDatasetTests(unittest.TestCase):
                      {"role": "developer", "content": "x", "unexpected": True}):
             with self.assertRaises(ValidationError):
                 ContextMessage(**data)
+
+
+class AuthoredDatasetTests(unittest.TestCase):
+    """Freeze approved allocation; semantic judgments still need human review."""
+
+    # Independent authoring-plan expectations, not imports of private dataset metadata.
+    FAMILIES = (
+        ("extraction", "ex", "eeennnhnnhhnnnnhhnnhaaannh", {9, 13, 14, 15, 16, 23, 24, 25}),
+        ("context_summary", "cs", "ennnnnnhhhnnhhhhhaahnhhaah", {1, 11, 12, 17, 21, 25}),
+        ("voicemail", "vm", "eeennhhheennnnnhhhhhaaanhh", {19, 20, 21, 22, 23, 24}),
+        ("qa", "qa", "eeeeenennnehhhhhhhhhhhhnaannaahh", {24, 27, 28, 29, 30}),
+        ("qa_conversation_summary", "qs", "ennhhhnhaa", {7}),
+        ("qa_node_summary", "ns", "ennhha", set()),
+    )
+    CONTROLS = {
+        "adapter_control": {"EX-013", "EX-014", "EX-015", "EX-016", "CS-001", "CS-021", "CS-023"},
+        "response_contract": {"EX-024", "EX-025", "EX-026", "CS-024", "VM-022", "VM-023", "VM-024",
+                              "QA-026", "QA-027", "QA-028", "QA-029", "QA-030"},
+        "transport_contract": {"CS-025"},
+    }
+
+    @classmethod
+    def setUpClass(cls):
+        cls.root = Path(__file__).resolve().parents[1] / "data" / "curated"
+        cls.cases = load_curated_cases(cls.root)
+        cls.by_matrix = {next(t.removeprefix("matrix:") for t in c.tags if t.startswith("matrix:")): c
+                         for c in cls.cases}
+
+    def test_exact_inventory_ids_order_and_allocation(self):
+        from collections import Counter
+        expected_ids, expected_critical = [], set()
+        for task, prefix, difficulties, noncritical in self.FAMILIES:
+            for ordinal, difficulty in enumerate(difficulties, 1):
+                source = "adversarial" if difficulty == "a" else "curated"
+                case_id = f"{source}-{prefix}-{ordinal:03}"
+                expected_ids.append(case_id)
+                if ordinal not in noncritical:
+                    expected_critical.add(case_id)
+                actual = self.by_matrix[f"{prefix.upper()}-{ordinal:03}"]
+                self.assertEqual(actual.contract_id, task)
+                self.assertEqual(actual.difficulty.value, dict(e="easy", n="normal", h="hard", a="adversarial")[difficulty])
+        self.assertEqual([c.id for c in self.cases], expected_ids)
+        self.assertEqual(len(set(expected_ids)), 126)
+        self.assertEqual([sum(c.task == task for c in self.cases) for task, *_ in self.FAMILIES], [26, 26, 26, 32, 10, 6])
+        self.assertEqual(Counter(c.source.value for c in self.cases), {"curated": 109, "adversarial": 17})
+        self.assertEqual(Counter(c.exercise.kind for c in self.cases),
+                         {"model": 106, "adapter_control": 7, "response_contract": 12, "transport_contract": 1})
+        self.assertEqual({c.id for c in self.cases if c.critical}, expected_critical)
+        self.assertEqual([sum(c.critical and c.task == task for c in self.cases) for task, *_ in self.FAMILIES], [18, 20, 20, 27, 9, 6])
+        self.assertEqual(sum(c.critical and c.is_model_quality_case for c in self.cases), 96)
+        self.assertEqual({c.id for c in self.cases if c.critical and not c.is_model_quality_case},
+                         {"curated-ex-026", "curated-cs-023", "adversarial-cs-024", "adversarial-qa-026"})
+        for kind, ids in self.CONTROLS.items():
+            self.assertEqual({mid for mid, c in self.by_matrix.items() if c.exercise.kind == kind}, ids)
+        controls = set.union(*self.CONTROLS.values())
+        self.assertTrue(all(c.exercise.kind == "model" for mid, c in self.by_matrix.items() if mid not in controls))
+
+    def test_six_exact_files_and_synthetic_annotations(self):
+        from ovp36_benchmark.schemas import validate_safe_identifier
+        self.assertEqual({p.name for p in self.root.iterdir()}, {f"{task}.jsonl" for task, *_ in self.FAMILIES})
+        for c in self.cases:
+            with self.subTest(case=c.id):
+                validate_safe_identifier(c.id)
+                self.assertEqual(c.id, c.id.lower())
+                self.assertIn("synthetic", c.tags)
+                self.assertIsNone(c.provenance)
+                self.assertTrue(c.notes)
+                self.assertIsNotNone(c.expected)
+        # Guard obvious accidental identifiers; this does not prove synthetic origin.
+        text = "\n".join(p.read_text() for p in sorted(self.root.iterdir()))
+        self.assertNotRegex(text, r"https?://|/Users/|/home/|\b\d{1,3}(?:\.\d{1,3}){3}\b")
+        self.assertNotRegex(text, r"[\w.+-]+@[\w.-]+\.[A-Za-z]{2,}|\bsk-[A-Za-z0-9]{12,}")
+
+    def test_complete_validation_resolves_evidence_without_mutating_cases(self):
+        before = [c.model_dump_json() for c in self.cases]
+        self.assertEqual(validate_curated_cases(self.cases, require_complete=True), self.cases)
+        self.assertEqual(before, [c.model_dump_json() for c in self.cases])
+
+    def test_runtime_evidence_reaches_selected_model_input(self):
+        from ovp36_benchmark.adapters import select_summary_context, format_summary_transcript, render_runtime_summary
+        count = 0
+        for c in self.cases:
+            if c.task != "context_summary" or not c.is_model_quality_case:
+                continue
+            count += 1
+            selected = select_summary_context(c.input)
+            transcript = format_summary_transcript(selected.messages)
+            self.assertTrue(transcript)
+            for f in c.expected.required_facts + c.expected.superseded_facts:
+                for evidence in f.evidence:
+                    self.assertRegex(evidence.input_pointer, r"^/messages/[0-9]+/content$")
+                    index = int(evidence.input_pointer.split("/")[2])
+                    self.assertGreaterEqual(index, 1)
+                    self.assertLessEqual(index, selected.last_summarized_index)
+                    self.assertIn(c.input.messages[index].content, transcript)
+            self.assertEqual(render_runtime_summary(c.input)[1]["content"], "Conversation history:\n" + transcript)
+        self.assertEqual(count, 21)
+        self.assertEqual(select_summary_context(self.by_matrix["CS-007"].input).last_summarized_index, 1)
+        self.assertEqual(select_summary_context(self.by_matrix["CS-016"].input).last_summarized_index, 5)
+        long = self.by_matrix["CS-020"]
+        self.assertEqual(len(long.input.messages), 128)
+        self.assertEqual(select_summary_context(long.input).last_summarized_index, 125)
+        self.assertNotIn("...(truncated)", render_runtime_summary(long.input)[1]["content"])
+
+    def test_authored_extraction_controls_and_typed_gold(self):
+        from ovp36_benchmark.adapters import render_extraction
+        for mid in ("EX-013", "EX-014", "EX-015"):
+            c = self.by_matrix[mid]
+            history = render_extraction(c.input)[1]["content"].split("Conversation history:\n", 1)[1]
+            self.assertEqual(history, c.expected.assertions["formatted_history"])
+        spelling = self.by_matrix["EX-015"].input.messages
+        self.assertEqual(spelling[0].content.strip(), '{"status": "done"}')
+        self.assertEqual(spelling[1].content, '{"status":"done"}')
+        c = self.by_matrix["EX-016"]
+        raw = c.input.messages[0].content
+        self.assertGreater(len(raw), 2000)
+        self.assertTrue(render_extraction(c.input)[1]["content"].endswith(
+            raw[:2000] + "...(truncated)\n" + c.expected.assertions["following_message"]))
+        self.assertIs(type(self.by_matrix["EX-018"].expected.fields["party_size"].acceptable_values[0]), int)
+        self.assertIs(self.by_matrix["EX-019"].expected.fields["confirmed"].acceptable_values[0], False)
+        for mid in ("EX-002", "EX-003", "EX-021"):
+            for gold in self.by_matrix[mid].expected.fields.values():
+                if gold.state == "missing":
+                    self.assertEqual(gold.evidence, ())
+                    self.assertEqual(gold.missing_policy.values, ("unknown",))
+                    self.assertFalse(gold.missing_policy.allow_absent)
+
+    def test_authored_summary_controls_preserve_current_context(self):
+        from ovp36_benchmark.adapters import select_summary_context, render_runtime_summary, apply_context_summary
+        self.assertIsNone(render_runtime_summary(self.by_matrix["CS-001"].input))
+        c = self.by_matrix["CS-021"]
+        selected = select_summary_context(c.input)
+        self.assertEqual(selected.messages, c.input.messages[1:6])
+        self.assertEqual(selected.last_summarized_index, 5)
+        c = self.by_matrix["CS-023"]
+        current = c.exercise.current_messages
+        assertions = c.expected.assertions
+        result = apply_context_summary(current, assertions["last_summarized_index"], assertions["summary_text"])
+        self.assertEqual(result[0], current[0])
+        self.assertNotEqual(current[0], c.input.messages[0])
+        self.assertEqual(result[1].content, assertions["expected_summary_message"])
+        self.assertEqual(result[2:], current[6:])
+        self.assertEqual(len(result), 6)
+        c = self.by_matrix["CS-024"]
+        self.assertEqual(apply_context_summary(c.input.messages, 5, c.exercise.raw_output), c.input.messages)
+        self.assertEqual(self.by_matrix["CS-025"].exercise.response, "timeout")
+
+    def test_supplied_response_stimuli_match_parser_annotations(self):
+        from ovp36_benchmark.parsing import parse_extraction, parse_summary, parse_voicemail, parse_qa
+        parsers = dict(extraction=parse_extraction, context_summary=parse_summary, voicemail=parse_voicemail, qa=parse_qa)
+        for c in self.cases:
+            if c.exercise.kind != "response_contract" or c.id == "adversarial-qa-026":
+                continue
+            parsed = parsers[c.task.value](c.exercise.raw_output)
+            assertions = c.expected.assertions
+            for key in ("strict_json_valid", "strict_format_valid", "parser_path", "production_usable", "parsed_value", "normalized_value"):
+                if key in assertions:
+                    self.assertEqual(getattr(parsed, key), assertions[key], (c.id, key))
+            if "decision" in assertions:
+                self.assertEqual(parsed.normalized_value, assertions["decision"])
+            if "source_defaults" in assertions:
+                defaults = dict(tags=[], summary="", call_quality_score=None, overall_sentiment=None)
+                for key, value in assertions["source_defaults"].items():
+                    self.assertEqual(parsed.normalized_value.get(key, defaults[key]), value)
+
+    def test_qa_invented_evidence_is_supplied_not_model_generated(self):
+        from ovp36_benchmark.parsing import parse_qa
+        c = self.by_matrix["QA-026"]
+        result = parse_qa(c.exercise.raw_output)
+        self.assertTrue(result.production_usable)
+        self.assertIn("threatened to hang up", result.parsed_value["tags"][0]["reason"])
+        self.assertEqual(result.parsed_value["tags"][0]["tag"], "USER_FRUSTRATED")
+        self.assertEqual(result.parsed_value["overall_sentiment"], "negative")
+        self.assertEqual(c.exercise.raw_output,
+                         '{"tags":[{"tag":"USER_FRUSTRATED","reason":"The user threatened to hang up in anger."}],'
+                         '"overall_sentiment":"negative","call_quality_score":2,"summary":"The user threatened to hang up."}')
+        self.assertNotIn("hang up", c.input.transcript)
+        self.assertEqual(c.input.transcript, self.by_matrix["QA-001"].input.transcript)
+        self.assertIn("Thank you, that answers my question.", c.input.transcript)
+        self.assertEqual(c.expected.expected_sentiment, "positive")
+        self.assertEqual(c.expected.expected_tags, ())
+        self.assertIn("USER_FRUSTRATED", c.expected.forbidden_tags)
+        self.assertEqual(c.expected.quality_score_range, (9, 10))
+
+    def test_qa_pair_relationships_change_only_intended_context(self):
+        for first, second, field in (("QA-001", "QA-031", "node_summary"),
+                                     ("QA-019", "QA-032", "previous_conversation_summary")):
+            a, b = self.by_matrix[first], self.by_matrix[second]
+            left, right = a.input.model_dump(), b.input.model_dump()
+            self.assertNotEqual(left.pop(field), right.pop(field))
+            self.assertEqual(left, right)
+            self.assertNotEqual(a.expected.expected_tags, b.expected.expected_tags)
+        a, b = self.by_matrix["QA-001"], self.by_matrix["QA-031"]
+        self.assertEqual(a.expected.expected_sentiment, "positive")
+        self.assertEqual(b.expected.expected_sentiment, a.expected.expected_sentiment)
+        self.assertEqual(a.expected.expected_tags, ())
+        self.assertEqual(b.expected.expected_tags, ("ASSISTANT_REPLY_IMPROPER",))
+        self.assertEqual(b.expected.quality_score_range, (3, 5))
+
+    def test_qa_distant_loop_repeats_an_answered_assistant_question(self):
+        c = self.by_matrix["QA-021"]
+        lines = c.input.transcript.splitlines()
+        question_indices = [i for i, line in enumerate(lines)
+                            if line.endswith("assistant: What date do you want?")]
+        self.assertGreaterEqual(len(question_indices), 2)
+        first, last = question_indices[0], question_indices[-1]
+        self.assertEqual(first, 1)
+        self.assertIn("user: I am ready to provide my date.", lines[first - 1])
+        self.assertIn("user: My date is 2030-10-18.", lines[first + 1])
+        self.assertIn("assistant: I have noted the date.", lines[first + 2])
+        self.assertGreaterEqual(last - first, 40)  # Long intervening context, not adjacent repetition.
+        self.assertIn("user: I already said 2030-10-18. This is frustrating.", lines[last + 1])
+        self.assertEqual(len(lines), 48)
+        self.assertEqual(c.input.metrics, dict(call_duration_seconds=None, num_turns=24,
+                         avg_latency_seconds=0.5, avg_ttfb_seconds=0.2, max_latency_seconds=0.8))
+        self.assertEqual(c.expected.expected_tags, ("ASSISTANT_IN_LOOP", "USER_FRUSTRATED"))
+        self.assertEqual(c.expected.forbidden_tags, ("HEARING_ISSUES", "DEAD_AIR"))
+        self.assertEqual(c.expected.expected_sentiment, "negative")
+        self.assertEqual(c.expected.quality_score_range, (3, 5))
+
+    def test_qa_timestamps_and_precomputed_metrics_are_compatible(self):
+        for c in self.cases:
+            if c.task != "qa":
+                continue
+            rows = re.findall(r"^\[([0-9.]+)s\] (user|assistant):", c.input.transcript, re.MULTILINE)
+            gaps = []
+            self.assertEqual(len(rows), 2 * c.input.metrics["num_turns"])
+            for index in range(0, len(rows), 2):
+                self.assertEqual((rows[index][1], rows[index + 1][1]), ("user", "assistant"))
+                gaps.append(float(rows[index + 1][0]) - float(rows[index][0]))
+            self.assertAlmostEqual(sum(gaps) / len(gaps), c.input.metrics["avg_latency_seconds"])
+            self.assertAlmostEqual(max(gaps), c.input.metrics["max_latency_seconds"])
+            duration = c.input.metrics["call_duration_seconds"]
+            if duration is not None:
+                self.assertGreaterEqual(duration, float(rows[-1][0]))
+        for mid in ("QA-008", "QA-023"):
+            self.assertEqual(self.by_matrix[mid].input.metrics["max_latency_seconds"], 24.0)
+
+    def test_ambiguous_voicemail_and_qa_annotations_require_human_review(self):
+        from ovp36_benchmark.schemas import QAEvaluationExpected
+        for i, label, ambiguous in ((17, "VOICEMAIL", False), (18, "CONVERSATION", True),
+                                    (19, "VOICEMAIL", True), (20, "CONVERSATION", True), (21, None, True)):
+            c = self.by_matrix[f"VM-{i:03}"]
+            self.assertIn("human-review-required", c.tags)
+            self.assertEqual(c.expected.label, label)
+            self.assertEqual(c.expected.ambiguous, ambiguous)
+            self.assertEqual(c.exercise.kind, "model")
+        self.assertEqual(self.by_matrix["VM-021"].input.messages[0].content, "")
+        for c in self.cases:
+            if isinstance(c.expected, QAEvaluationExpected):
+                self.assertIn("human-review-required", c.tags)
+                self.assertIn("Draft QA", c.notes)
+        self.assertIn("USER_NOT_UNDERSTANDING", self.by_matrix["QA-016"].expected.expected_tags)
+
+    def test_summary_gold_is_factual_and_optional_behavior_stays_optional(self):
+        from ovp36_benchmark.schemas import SummaryExpected
+        for c in self.cases:
+            if isinstance(c.expected, SummaryExpected):
+                self.assertTrue(c.expected.required_facts)
+                if c.task == "qa_conversation_summary":
+                    self.assertEqual(c.expected.sentence_range, (3, 5))
+                if c.task == "qa_node_summary":
+                    self.assertEqual(c.expected.sentence_range, (2, 4))
+        c = self.by_matrix["NS-006"]
+        facts = {f.id: f for f in c.expected.required_facts}
+        self.assertEqual(c.expected.optional_behaviors, ("optional-offer", "optional-lookup"))
+        for name in c.expected.optional_behaviors:
+            self.assertIn("optional", facts[name].statement)
+            self.assertIn("conditional", facts[name].statement)
+        self.assertIn("confirmation-required", c.expected.key_behaviors)
+        self.assertIn("required", facts["confirmation-required"].statement)
+
+    def test_hash_and_all_126_review_rows_are_stable(self):
+        again = load_curated_cases(self.root)
+        self.assertEqual(hash_dataset(self.cases), hash_dataset(again))
+        reordered_keys = tuple(BenchmarkCase.model_validate_json(json.dumps(c.model_dump(mode="json"), sort_keys=True)) for c in self.cases)
+        self.assertEqual(hash_dataset(self.cases), hash_dataset(reordered_keys))
+        rows = curated_review_rows(self.cases)
+        self.assertEqual(len(rows), 126)
+        self.assertEqual(rows, curated_review_rows(again))
+        self.assertEqual([r["case_id"] for r in rows], [c.id for c in self.cases])
+        for row in rows:
+            self.assertEqual(set(row), {"case_id", "matrix_id", "contract", "source", "exercise_kind",
+                                       "difficulty", "critical", "short_scenario", "expected_annotation_summary"})
+            self.assertLessEqual(len(row["short_scenario"]), 160)
+
+    def test_full_generated_plan_counts_order_and_no_execution(self):
+        from contextlib import ExitStack
+        from ovp36_benchmark.adapters import prepare_curated_plan
+        from ovp36_benchmark.requests import prepare_generated_request
+        from ovp36_benchmark.schemas import RunConfig
+        model_ids = [c.id for c in self.cases if c.is_model_quality_case]
+        for repetitions in (1, 2):
+            config = RunConfig.model_validate_json(json.dumps({
+                "endpoint": {"alias": "synthetic", "base_url_env": "UNUSED_SYNTHETIC_ENDPOINT", "model": "synthetic-model"},
+                "generation": {"temperature": 0.0, "max_tokens": 71, "top_p": 1.0, "seed": 7},
+                "repetitions": repetitions, "experiment_label": "synthetic-preparation", "evaluation": "exploratory"}))
+            with ExitStack() as stack:
+                for target in ("ovp36_benchmark.requests.prepare_captured_request", "ovp36_benchmark.requests.CapturedReplayRequest",
+                               "ovp36_benchmark.client.ModelClient", "ovp36_benchmark.runner.run_plan",
+                               "ovp36_benchmark.persistence.ResultJournal.open", "socket.socket.connect", "socket.getaddrinfo"):
+                    stack.enter_context(patch(target, side_effect=AssertionError("execution or replay forbidden")))
+                generated = stack.enter_context(patch("ovp36_benchmark.adapters.prepare_generated_request", wraps=prepare_generated_request))
+                plan = prepare_curated_plan(self.cases, config=config, resolved_model="synthetic-model")
+            self.assertEqual(generated.call_count, 106)
+            self.assertEqual(len(plan), 106 * repetitions)
+            self.assertEqual([(p.request.case_id, p.repetition_index) for p in plan],
+                             [(case_id, rep) for rep in range(repetitions) for case_id in model_ids])
+            for item in plan:
+                self.assertIsNone(item.request.captured)
+                self.assertEqual(item.request.generation, config.generation)

@@ -1,13 +1,15 @@
 # OVP-36 OOB model benchmark
 
-Standalone research benchmark. **Stages 1–4B1:** strict schemas, TOML configuration,
+Standalone research benchmark. **Stages 1–4B2:** strict schemas, TOML configuration,
 read-only JSONL dataset operations, versioned prompt contracts, and response
 parsing, immutable request preparation, pure identity primitives, and a common
 one-shot AsyncOpenAI client, immutable run manifests, private result journals,
 and a sequential prepared-request runner with frozen OVP-34 replay loading and
 plan preparation. Stage 4B1 adds source-aligned curated adapters, inventory
-validation, model-only plan preparation, and review projections. Final curated
-case authoring (4B2), scoring, reports, and serving remain unimplemented.
+validation, model-only plan preparation, and review projections. Stage 4B2 adds
+the fixed 126-case synthetic curated/adversarial inventory and its review projection. The literal fixtures and draft semantic annotations still
+require external human review before candidate runs. Scoring, reports, and serving
+remain unimplemented; no candidate evaluation has been run.
 
 OVP-36 has four product-level OOB areas: extraction, runtime context summary,
 voicemail, and post-call QA. The benchmark has six source-derived task contracts:
@@ -97,14 +99,20 @@ not independently verified historical HTTP bytes. For the 56 runtime summaries,
 current tracing reconstructs the summary request after generation; historical
 wire equality is not independently proven. Keep those observations and their
 qualification; never regenerate them. Historical outputs are baseline behavior,
-not automatic gold. Curated/adversarial requests will use source-aligned adapters;
+not automatic gold. Curated/adversarial requests use source-aligned adapters;
 historical replay bypasses adapters. Private replay data is never included.
 
-## Curated preparation (Stage 4B1)
+## Curated preparation and authored inventory (Stages 4B1–4B2)
 
-Stage 4B1 implements machinery using small test-local synthetic fixtures only.
-Stage 4B2 will author and human-review the final 126 scenarios after adapter
-review. No final `data/curated/*.jsonl` files exist in 4B1.
+Stage 4B1 adapter and inventory infrastructure is complete. Stage 4B2 now supplies
+all six `data/curated/*.jsonl` files: 126 independently synthetic scenarios,
+including 106 model exercises and 20 controls. These are draft annotations awaiting
+external semantic review, not candidate-derived truth or completed human review.
+All VM-017–021 annotations and all QA tag/sentiment/score judgments require explicit
+human inspection of the literal wording before candidate evaluation. VM-021's
+null label marks insufficient evidence, not a third model label; Stage 4C will
+freeze its metric treatment. QA score bands are case annotations, not acceptance
+thresholds. No scoring, client execution, model call, or server start occurs here.
 
 `dataset.py` provides `validate_curated_cases(cases, require_complete=False)`,
 `load_curated_cases(root)`, and `curated_review_rows(cases)`. Reuse BenchmarkCase
@@ -140,7 +148,7 @@ from ovp36_benchmark.dataset import load_curated_cases, hash_dataset, curated_re
 from ovp36_benchmark.adapters import prepare_curated_plan
 from ovp36_benchmark.identity import fingerprint_execution_plan
 
-# After 4B2 authors the files; root/config/model are explicit caller inputs.
+# root/config/model are explicit caller inputs; preparation never sends requests.
 cases = load_curated_cases(root)
 rows = curated_review_rows(cases)
 plan = prepare_curated_plan(cases, config=config, resolved_model=resolved_model)
@@ -155,12 +163,19 @@ source provenance. Exactly one configured token-limit field is retained.
 
 The inventory contains 126 scenarios: 106 model exercises and 20 controls.
 Only model exercises enter the repetition-major plan, giving 106 * repetitions
-for the future complete suite. Controls never enter candidate quality or latency
+for the complete authored suite. Controls never enter candidate quality or latency
 denominators. Stage 4C must evaluate/report controls separately. Preparation
 performs no client construction, runner execution, journal access, or scoring.
 
 Review rows contain IDs, contract/category, exercise, difficulty, critical flag,
 a short scenario, and gold summaries; they do not render or print prompts.
+The suite has 109 curated and 17 adversarial rows, with 100 critical entries:
+96 model exercises and four controls. Tests freeze exact IDs, control/critical
+allocations, evidence resolution (including runtime selected-slice visibility),
+QA context-pair equality, hash stability, and 106/212 preparation counts for one/two
+repetitions. Source-shaped synthetic QA metrics are consistent with the authored
+transcript gaps; they are not measured model performance.
+
 All 126 authored cases need human review before any candidate run. Extraction
 policies, voicemail ambiguity, summary facts, QA score annotations, optional node
 behavior, and control assignments must be reviewed independently of model output.
@@ -444,7 +459,8 @@ Provider-controlled response text is hidden from repr but remains available to
 later parsing. Ordinary result serialization is **not** a safe persistence
 projection. Stage 3C applies the explicit private storage projection below.
 Stage 3D executes prepared requests as described below; Stage 4A supplies replay
-loading/preparation. Task adapters remain unimplemented.
+loading/preparation. Stage 4B1 provides task adapters; Stage 4B2 supplies their
+synthetic inventory.
 
 ## Local persistence (Stage 3C)
 
