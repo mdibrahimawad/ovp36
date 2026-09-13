@@ -9,6 +9,7 @@ from ovp36_benchmark.config import resolve_endpoint
 from ovp36_benchmark.identity import (
     ExecutionKey, IDENTITY_VERSION, canonical_json_bytes, fingerprint_messages,
     fingerprint_request, fingerprint_safe_config, make_run_id, fingerprint_execution_plan,
+    fingerprint_replay_dataset,
 )
 from ovp36_benchmark.requests import prepare_generated_request
 from ovp36_benchmark.schemas import EndpointConfig, GenerationConfig, RunConfig, ServerMetadata, Source, Task
@@ -34,6 +35,43 @@ def run_components(**updates):
 
 
 class IdentityTests(unittest.TestCase):
+    def test_replay_dataset_golden_order_and_field_sensitivity(self):
+        entry = dict(case_id="ovp34-0000000000000001", contract="variable_extraction",
+                     source_observation_id="0000000000000001", message_fingerprint="a" * 64)
+        digest = fingerprint_replay_dataset([entry])
+        self.assertEqual(digest, "468aeb55285ebb6a02948b588fe5f9ddbc1ee72bff17affc85d9492764104d9c")
+        self.assertEqual(fingerprint_replay_dataset([]),
+                         "43648bb35a692fb935aaf6449cecf6b8856beaed5f736f0b9db49a6980fbb4d8")
+        self.assertEqual(digest, fingerprint_replay_dataset([dict(reversed(list(entry.items())))]))
+        for change in ({"case_id": "other-safe-case"}, {"source_observation_id": "0000000000000002"},
+                       {"message_fingerprint": "b" * 64}, {"contract": "runtime_context_summary"},
+                       {"contract": "voicemail_detection"}, {"contract": "qa_evaluation"},
+                       {"contract": "qa_conversation_summary"}):
+            other = entry | change
+            self.assertNotEqual(digest, fingerprint_replay_dataset([other]))
+            self.assertNotEqual(fingerprint_replay_dataset([entry, other]),
+                                fingerprint_replay_dataset([other, entry]))
+
+    def test_replay_dataset_rejects_invalid_projections_safely(self):
+        entry = dict(case_id="ovp34-0000000000000001", contract="variable_extraction",
+                     source_observation_id="0000000000000001", message_fingerprint="a" * 64)
+        invalid = [None, (), {}, "PRIVATE_MARKER", [None], [list(entry)],
+                   [entry | {"messages": "PRIVATE_MARKER"}]]
+        invalid.extend([{k: v for k, v in entry.items() if k != field}] for field in entry)
+        for field, values in {
+            "case_id": ["../PRIVATE_MARKER", "", True],
+            "contract": ["qa_node_summary", "PRIVATE_MARKER", None, True],
+            "source_observation_id": ["A" * 16, "a" * 15, "a" * 17, "a" * 16 + "\n", 1],
+            "message_fingerprint": ["A" * 64, "bad", None],
+        }.items():
+            invalid.extend([[entry | {field: value}] for value in values])
+        for value in invalid:
+            with self.subTest(value=value), self.assertRaises(ValueError) as caught:
+                fingerprint_replay_dataset(value)
+            self.assertEqual(str(caught.exception), "invalid_replay_dataset_projection")
+            self.assertIsNone(caught.exception.__cause__)
+            self.assertIsNone(caught.exception.__context__)
+
     def test_stage_3a_identity_golden_digests_unchanged(self):
         messages = [{"role": "user", "content": " x "}]
         request = prepare_generated_request(messages, case_id="x", task=Task.QA,

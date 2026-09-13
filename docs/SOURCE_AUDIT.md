@@ -33,6 +33,49 @@ There are two fidelity paths:
 
 Historical outputs remain baseline behavior, not automatic gold. Keep raw/private exports ignored and uncommitted. If a local export is absent or incomplete, report that availability problem; do not fabricate inputs. Stage 3A prepares captured messages directly without adapters; it does not implement a replay loader or execute requests.
 
+### 1.2 Stage 4A frozen-source verification
+
+The final delivery's `data/analysis/ovp34/raw/final_100_direct_id/`
+`langfuse_observations.jsonl` contains 2,445 observations: 1,627 GENERATION and
+818 SPAN rows, with no duplicate observation IDs. The delivery notebook's frozen
+analyzer validates 100 runs/traces and reconstructs 242 canonical OOB jobs with
+zero attribution ambiguities: 40 extraction, 56 runtime context summaries,
+22 voicemail detections, 72 QA evaluations, and 52 QA conversation summaries.
+There are no historical node/script-summary generations. Seven retained runtime
+summaries have unavailable usage; positive token counts alone are not selection.
+
+The existing `analysis/ovp34/outputs/oob_jobs.csv` has 242 rows whose observation
+IDs and order exactly match the delivery analyzer's `build_oob_rows()` result.
+That result sorts by cohort, numeric workflow run ID, and start time; there are
+no tied triples in this selected set. Raw JSONL selected-record order differs.
+The analyzer excludes 40 generic extraction wrappers and 56 generic summary
+wrappers in favor of the named observations. The CSV supplies the verified
+selection/order evidence without rerunning that attribution algorithm.
+
+All selected inputs contain exactly `messages`, with no top-level tools or
+tool_choice. The 500 messages comprise 472 objects with content/role, 14 voicemail
+assistant objects with role/tool_calls and no content key, and 14 tool objects
+with content/role/tool_call_id. No selected message has explicit content:null.
+All 14 function argument values are strings, and all 242 selected observation IDs
+are unique 16-character lowercase hexadecimal values. Captured-boundary audit
+round-trip equality was 242/242. Runtime-summary tracing retains the qualification
+in section 1.1; these findings do not prove historical HTTP wire equality.
+
+Voicemail outputs are strings (22); the other 220 outputs are objects containing
+exactly a string-valued `content` field. These remain external baseline evidence,
+not gold or a payload to copy into benchmark manifests/journals.
+
+Audited artifact evidence (SHA-256 of exact file bytes):
+
+| Artifact | Bytes | SHA-256 |
+|---|---:|---|
+| Raw observations JSONL | 46,953,072 | `dbea5016e0445cad2952c2cba861782d75c1944a1c83ae826ca6c936e31c35e6` |
+| Selection `oob_jobs.csv` | 57,587 | `419f21cce3fa5c49645b0d237114aad521251f1ecda8207b9e220d92696b4ee1` |
+
+These are source provenance facts for official real-data acceptance. Benchmark
+semantic identity and repetition order are separate design choices documented
+in `BENCHMARK_SPEC.md`; artifact-byte identity is not semantic dataset identity.
+
 ---
 
 ## 2. What the standalone benchmark should replicate

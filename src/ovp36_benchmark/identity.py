@@ -3,7 +3,7 @@
 import hashlib
 import json
 import math
-from typing import Annotated, TYPE_CHECKING
+from typing import Annotated, Literal, TYPE_CHECKING
 
 from pydantic import Field, TypeAdapter
 
@@ -133,3 +133,34 @@ def fingerprint_execution_plan(entries: list[dict[str, object]]) -> str:
     if failure is not None:
         raise failure
     return _fingerprint("execution-plan", validated)
+
+
+def fingerprint_replay_dataset(entries: list[dict[str, object]]) -> str:
+    """Ordered selected replay inputs, independent of artifacts and candidate settings."""
+    validators = {
+        "case_id": TypeAdapter(SafeIdentifier),
+        "contract": TypeAdapter(Literal[
+            "variable_extraction", "runtime_context_summary", "voicemail_detection",
+            "qa_evaluation", "qa_conversation_summary",
+        ]),
+        "source_observation_id": TypeAdapter(Annotated[
+            SafeIdentifier, Field(pattern=r"^[0-9a-f]{16}$"),
+        ]),
+        "message_fingerprint": TypeAdapter(SHA256),
+    }
+    if type(entries) is not list or any(
+        type(entry) is not dict or entry.keys() != validators.keys() for entry in entries
+    ):
+        raise ValueError("invalid_replay_dataset_projection")
+    failure = None
+    try:
+        validated = [
+            {name: validator.validate_python(entry[name], strict=True)
+             for name, validator in validators.items()}
+            for entry in entries
+        ]
+    except ValueError:
+        failure = ValueError("invalid_replay_dataset_projection")
+    if failure is not None:
+        raise failure
+    return _fingerprint("ovp34-replay-dataset", validated)

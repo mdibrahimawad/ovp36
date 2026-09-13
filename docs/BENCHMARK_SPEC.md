@@ -137,8 +137,36 @@ The runner/client design must preserve two distinct request paths:
 
 Stage 3A implements separate captured/generated preparation paths and immutable
 transport snapshots. Stages 3B–3D add the one-shot client, private persistence,
-and sequential prepared-request runner. Replay loading and task adapters remain
-unimplemented; strict curated task-input schemas remain separate.
+and sequential prepared-request runner. Stage 4A adds the historical replay loader
+and plan preparation; task adapters remain unimplemented and strict curated
+task-input schemas remain separate.
+
+Stage 4A uses the verified `oob_jobs.csv` as the explicit selected-ID and canonical
+case-order authority; raw JSONL supplies the captured messages. It validates all
+raw rows and exact subtype counts without porting wrapper attribution or
+deduplicating messages. Cases use `ovp34-` plus the complete 16-character lowercase
+hexadecimal observation ID. Captured messages pass only through `MessageSnapshot`,
+`CapturedReplayRequest`, and `prepare_captured_request()`. Historical outputs and
+other original provenance remain external, retrievable by source observation ID.
+
+Semantic replay dataset identity hashes the ordered projections containing exactly
+`case_id`, `contract`, `source_observation_id`, and `message_fingerprint` through
+the public `fingerprint_replay_dataset()` helper and versioned domain
+`ovp34-replay-dataset`. Selected observations, contract mapping, message semantics,
+and canonical order affect it. Historical output, unrelated telemetry, source
+paths, candidate settings, and semantically irrelevant artifact formatting do not.
+Raw/selection artifact SHA-256 values describe the exact bytes parsed, retained
+as in-memory provenance; they are not semantic dataset identity inputs. Official
+real-data acceptance checks the audited artifact hashes separately. The public
+loader requires semantic/structural validity and counts, not official checksums.
+
+`prepare_replay_plan(replay, *, config, resolved_model)` uses new candidate settings
+from `config.generation` and the explicit resolved candidate model. It preserves
+the existing single token-limit-field normalization and expands repetition-major:
+all CSV-ordered cases at repetition zero, then all cases at repetition one, etc.
+The caller computes the ordered execution-plan hash using the existing public
+helper. Stage 4A performs no model calls, journal operations, automatic manifest
+creation, scoring, or serving. It creates no curated/adversarial cases.
 
 Historical baseline output is reference behavior, NOT automatically ground truth.
 

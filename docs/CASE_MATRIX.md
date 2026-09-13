@@ -378,7 +378,8 @@ For the 56 runtime summaries, current tracing reconstructs the summary request
 after generation; historical wire equality is not independently proven. Retain
 all 56 with that caveat and bypass adapters for all historical replay. Exact
 preservation refers to captured JSON message semantics, not verified original
-HTTP bytes. Stage 3A provides request preparation only, not replay loading.
+HTTP bytes. Stage 3A provides the captured-request boundary; Stage 4A adds loading
+from external raw JSONL plus the verified `oob_jobs.csv` selection artifact.
 
 | Replay family | Captured observations | Exact-message replay target |
 |---|---:|---:|
@@ -401,7 +402,14 @@ Replay requirements:
 - report unavailable/incomplete local exports explicitly rather than fabricating requests;
 - never mix replay cases with curated cases in aggregate reporting without showing both breakdowns.
 
-Replay loading is a later stage. Curated/adversarial cases use source-aligned adapters; replay uses the captured historical requests.
+Stage 4A loads exactly these five historical subtypes of the six total benchmark
+contracts, with zero historical node/script-summary generations. CSV row order
+is canonical case order; plan expansion is repetition-major. Semantic dataset
+identity binds ordered case IDs, contract values, source observation IDs, and
+message fingerprints. Artifact hashes are separate acceptance/provenance evidence.
+Historical output remains in the external source as baseline evidence, not gold.
+New candidate settings prepare captured requests without executing them. Curated/
+adversarial cases continue to require their separate source-aligned adapter path.
 
 ---
 

@@ -1,11 +1,11 @@
 # OVP-36 OOB model benchmark
 
-Standalone research benchmark. **Stages 1–3D:** strict schemas, TOML configuration,
+Standalone research benchmark. **Stages 1–4A:** strict schemas, TOML configuration,
 read-only JSONL dataset operations, versioned prompt contracts, and response
 parsing, immutable request preparation, pure identity primitives, and a common
 one-shot AsyncOpenAI client, immutable run manifests, private result journals,
-and a sequential prepared-request runner. Task adapters, replay loading, scoring,
-reports, and serving remain unimplemented.
+and a sequential prepared-request runner with frozen OVP-34 replay loading and
+plan preparation. Task adapters, scoring, reports, and serving remain unimplemented.
 
 OVP-36 has four product-level OOB areas: extraction, runtime context summary,
 voicemail, and post-call QA. The benchmark has six source-derived task contracts:
@@ -88,16 +88,91 @@ partial-suite development. No curated or replay data is created in Stage 1.
 
 The final OVP-34 replay target has 242 captured requests and outputs: 40
 extraction, 56 runtime summaries, 22 voicemail, 72 QA, and 52 QA
-previous-conversation summaries. Future replay reads a private local export and
-preserves captured historical trace messages, outputs, and task/span/provenance
-IDs. These messages are the best available captured trace/model-facing evidence,
+previous-conversation summaries. Stage 4A reads a private local export and
+preserves captured historical trace messages, with observation references to
+outputs and other provenance retained in that external source. These messages
+are the best available captured trace/model-facing evidence,
 not independently verified historical HTTP bytes. For the 56 runtime summaries,
 current tracing reconstructs the summary request after generation; historical
 wire equality is not independently proven. Keep those observations and their
 qualification; never regenerate them. Historical outputs are baseline behavior,
 not automatic gold. Curated/adversarial requests will use source-aligned adapters;
-historical replay bypasses adapters. No replay loader or private replay data is
-included.
+historical replay bypasses adapters. Private replay data is never included.
+
+## Historical replay preparation (Stage 4A)
+
+`replay.py` exposes `ReplayContract`, `CapturedReplayCase`, `ReplayDataset`,
+`ReplayError`, `load_ovp34_replay(source_path, *, selection_path)`, and
+`prepare_replay_plan(replay, *, config, resolved_model)`. Both paths are explicit;
+no machine-specific location, model server, or endpoint is discovered or contacted.
+
+```python
+from ovp36_benchmark.replay import load_ovp34_replay, prepare_replay_plan
+from ovp36_benchmark.identity import fingerprint_execution_plan
+
+replay = load_ovp34_replay(raw_path, selection_path=selection_path)
+plan = prepare_replay_plan(replay, config=config, resolved_model=resolved_model)
+dataset_hash = replay.dataset_hash
+ordered_execution_plan_hash = fingerprint_execution_plan(
+    [execution.identity_projection() for execution in plan]
+)
+```
+
+The selection input is the verified OVP-34 `oob_jobs.csv`; its rows determine IDs
+and canonical case order. Raw JSONL supplies observation payloads, even when its
+file order differs. The loader requires exactly 40 extraction, 56 runtime summary,
+22 voicemail, 72 QA evaluation, and 52 QA conversation-summary cases. There is
+no historical node/script-summary subtype among the six overall task contracts.
+Generic wrappers and other observations are excluded by selection ID, never by
+message deduplication or reconstructed attribution heuristics.
+
+Both artifacts are read once as bytes. CSV parsing rejects invalid framing,
+missing required columns (`observation_id`, `job_type`, `name`, `trace_id`), duplicate
+headers/IDs, and inconsistent name/category/reference mappings. Every raw JSONL
+row is validated, including unrelated rows: strict UTF-8, unique JSON keys, finite
+numbers, object envelopes, consistent IDs/traces, and newline termination. Missing
+selected observations or wrong counts fail closed without returning a partial set.
+Selected input must contain exactly `messages`, a list of JSON objects. No internal
+message schema inserts content, drops unknown fields, or rewrites argument strings.
+
+Case IDs are `ovp34-` plus the full validated 16-character lowercase hexadecimal
+observation ID. Frozen cases wrap the existing `CapturedReplayRequest`; private
+captures are excluded from repr and ordinary serialization. Historical output and
+provider configuration are not stored in replay cases. Later baseline comparison
+can retrieve them by observation ID from the external source. Runtime summaries
+carry the trace-reconstruction caveat; they are replayed without regeneration.
+
+`fingerprint_replay_dataset()` hashes ordered safe projections containing exactly
+`case_id`, `contract`, `source_observation_id`, and `message_fingerprint`, using the
+existing versioned domain `ovp34-replay-dataset`. Semantic identity changes with
+selected observations, contracts, messages, or case order. It ignores candidate
+settings, historical output, unrelated rows, file location, and semantically
+irrelevant JSON/CSV formatting. `hash_dataset()` remains for `BenchmarkCase` data.
+
+`source_artifact_hash` and `selection_artifact_hash` identify the exact parsed bytes
+as in-memory provenance only. They do not enter dataset, request, or plan identity.
+Official private-data acceptance compares these hashes with the audited pair in
+`docs/SOURCE_AUDIT.md`; the public loader does not enforce those particular hashes.
+Synthetic fixtures exercise the same strict loader without bypass flags.
+
+Preparation uses only `prepare_captured_request()` with the explicit resolved
+candidate model and current `config.generation`, including exactly one token-limit
+field. It produces repetition-major order: all CSV-ordered cases at repetition
+zero, then all cases at repetition one, and so on. No runner execution, manifest
+creation, journal opening, prompt rendering, or model call occurs in Stage 4A.
+Errors expose categories/line numbers only; translated private failures retain
+neither exception cause nor context.
+
+For local private acceptance, invoke the APIs above in a Python session with
+caller-supplied paths and fixed synthetic candidate configuration. Check both
+audited artifact hashes, subtype counts, 242 unique IDs, 14 voicemail assistant
+tool-call messages with absent content, and 14 tool-message references. Compare
+all 242 original selected message sequences with prepared messages, then repeat
+loading/preparation and compare case IDs, semantic dataset hash, and plan hash.
+Change candidate model/settings and verify request fingerprints change while
+message/dataset identity stays fixed. Print only counts, safe hashes, and pass/fail
+categories. Do not execute the plan or print historical messages/outputs. No
+tracked private-data validation script or CLI is required.
 
 ## Configuration
 
@@ -302,8 +377,8 @@ produces `invalid_response_json`, and a non-object top level produces
 Provider-controlled response text is hidden from repr but remains available to
 later parsing. Ordinary result serialization is **not** a safe persistence
 projection. Stage 3C applies the explicit private storage projection below.
-Stage 3D executes prepared requests as described below; adapters and replay
-loading remain unimplemented.
+Stage 3D executes prepared requests as described below; Stage 4A supplies replay
+loading/preparation. Task adapters remain unimplemented.
 
 ## Local persistence (Stage 3C)
 
