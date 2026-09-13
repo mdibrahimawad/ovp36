@@ -1,10 +1,10 @@
 # OVP-36 OOB model benchmark
 
-Standalone research benchmark. **Stages 1–3B:** strict schemas, TOML configuration,
+Standalone research benchmark. **Stages 1–3C:** strict schemas, TOML configuration,
 read-only JSONL dataset operations, versioned prompt contracts, and response
 parsing, immutable request preparation, pure identity primitives, and a common
-one-shot AsyncOpenAI client. Runner, result persistence, task adapters, scoring,
-reports, and serving remain unimplemented.
+one-shot AsyncOpenAI client, immutable run manifests, and private result journals.
+Runner, task adapters, scoring, reports, and serving remain unimplemented.
 
 OVP-36 has four product-level OOB areas: extraction, runtime context summary,
 voicemail, and post-call QA. The benchmark has six source-derived task contracts:
@@ -300,8 +300,80 @@ produces `invalid_response_json`, and a non-object top level produces
 
 Provider-controlled response text is hidden from repr but remains available to
 later parsing. Ordinary result serialization is **not** a safe persistence
-projection. Stage 3C persistence and Stage 3D execution/retry orchestration remain
-unimplemented, as do adapters and replay loading.
+projection. Stage 3C applies the explicit private storage projection below.
+Stage 3D execution/retry orchestration, adapters, and replay loading remain
+unimplemented.
+
+## Local persistence (Stage 3C)
+
+`persistence.py` provides synchronous `build_manifest(...)`,
+`load_manifest(results_root, run_id)`, `read_events(results_root, run_id)`, and
+`ResultJournal.open(results_root, expected_manifest)`. The journal supports
+`append_attempt(execution_key, attempt_index, result)`,
+`finalize(execution_key, attempt_index)`, `records()`, `completed_keys()`,
+`close()`, and synchronous context management. The caller explicitly supplies
+the results root and every identity component; persistence discovers no Git,
+endpoint, dataset, or dependency fingerprints.
+
+```text
+results/                         # ignored private evidence
+  <validated SHA-256 run_id>/
+    manifest.json                # ovp36-manifest-v1
+    journal.jsonl                # ovp36-journal-v1
+```
+
+The immutable manifest contains only the approved safe configuration projection
+and identity components, with the separate Stage 3A identity version. Optional
+seed/server fields retain their existing omission semantics. New manifests use
+public Stage 3A identity functions. Resume requires a strictly loaded manifest
+to match both the directory run ID and the caller's rebuilt expected manifest
+exactly; existing bytes are never rewritten. Standalone loading validates the
+stored schema/path, not independent recomputation of its safe-config hash.
+
+The journal contains two event kinds: `attempt` stores one returned Stage 3B
+result; `finalized` references the latest recorded attempt without duplicating
+its output. `attempt_index` starts at zero and is contiguous per `ExecutionKey`;
+it is separate from `repetition_index` and is not part of execution identity.
+Only finalized keys enter `completed_keys()`, including finalized failures.
+Unfinished attempts remain readable. The later runner must durably record each
+returned result before deciding whether to retry or finalize; Stage 3C makes
+neither decision and adds no cross-field constraints to Stage 3B result semantics.
+
+Candidate `raw_content` is preserved exactly, including private-looking text,
+only in ignored private journal artifacts. It is not redacted or keyword-scanned
+and is hidden from repr/errors. Historical messages, baseline outputs, provenance
+payloads, endpoints, credentials, headers, and raw HTTP material are not copied.
+Provider `finish_reason` and `response_model` are retained only when valid under
+`SafeIdentifier` and `SafeMetadata`, respectively. Rejected non-null values become
+null with field-name-only `omitted_metadata`, ordered `finish_reason` then
+`response_model`. Originally null fields receive no omission marker.
+
+Reading fails closed on malformed JSON/UTF-8, duplicate keys, schema or sequence
+violations, non-finite numbers (including overflow), blank lines, and any
+unterminated final record, even otherwise valid JSON. A missing/empty journal
+with a valid manifest is empty evidence; a journal without a manifest is invalid.
+There is no automatic tail repair or valid-prefix success. Errors expose safe
+categories/line numbers only. Parsed/scored structures remain deferred; candidate
+strings containing `NaN` or `Infinity` are ordinary text in standard JSON.
+
+The supported target is a local POSIX filesystem and **one sequential writer
+object per run in one process**. New directories request `0700`, files `0600`;
+group/other access is rejected on existing artifacts. More restrictive owner
+modes are allowed when sufficient for the operation. Symlinks and wrong artifact
+types are rejected; existing permissions are never broadened. These mode checks
+do not cover ACLs, administrator access, or network/non-POSIX security policy.
+
+If the results root is missing, its parent must already exist. Creating the root
+fsyncs that parent; creating the run directory fsyncs the root. Manifest creation
+writes/fsyncs a private temporary file, publishes with a create-only hard link,
+fsyncs the run directory, removes that temporary name, and fsyncs the directory
+again. Unsupported hard-link publication fails without an overwrite fallback.
+Journal appends handle short writes and fsync the file; first creation also
+fsyncs the run directory. In-memory state advances only after success. An uncertain
+write/fsync failure poisons the writer until close/reopen and strict validation.
+This is not HTTP/filesystem transactionality, exactly-once inference, universal
+power-loss protection, or concurrent-writer safety: a model call can happen before
+durable evidence exists. No database, new dependency, or timestamps are introduced.
 
 ## Prompt contracts (Stage 2)
 
@@ -380,8 +452,9 @@ non-finite values, including overflow from syntactically valid numbers such as
 `1e999`. `ParseResult` alone allows these values and serializes them as Python
 JSON constants, preserving them on round trip rather than converting to null.
 Case, configuration, and scoring schemas retain finite-number constraints.
-Standards-compliant result-file encoding is a future reporting decision; no
-result writer is implemented here.
+Standards-compliant encoding of parsed/scored structures remains a future
+decision. Stage 3C persists candidate text and transport evidence only, never
+`ParseResult` or its non-finite Python objects.
 
 `parse_extraction` retains parsed values without type repair. `parse_qa` retains
 the original parsed value but exposes `{}` as the consumed value for non-dicts,

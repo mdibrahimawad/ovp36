@@ -60,6 +60,36 @@ hashes, API keys, Authorization/header values, or arbitrary raw server
 configuration. Use the explicit safe configuration projection; neither full
 `ResolvedEndpoint` nor raw `RunConfig` is a persisted result contract.
 
+Stage 3C stores the raw transport-evidence subset of the eventual result view in
+ignored `<results_root>/<run_id>/manifest.json` and `journal.jsonl`. The caller
+supplies the root. The manifest is immutable; resume strictly checks its path/run
+ID and exact equality with the caller's expected manifest rebuilt through public
+Stage 3A identity functions. No timestamps or parsed/scored structures are stored.
+
+Each `attempt` records candidate transport evidence; `finalized` references the
+latest attempt without copying output again. Per-execution `attempt_index` starts
+at zero and is contiguous, separate from `repetition_index` and execution identity.
+Only finalized keys are completed, including finalized failures. Unfinished
+attempts remain available to later orchestration; Stage 3C has no retry policy
+and imposes no new Stage 3B result cross-field semantics.
+
+Candidate raw text is exact private ignored evidence, including any private
+material the candidate repeats. Historical messages, baseline outputs, and
+provenance payloads remain in the immutable private source dataset and are not
+duplicated into the journal. Unsafe provider finish reason/model values become
+null; `omitted_metadata` contains only their names in fixed order (`finish_reason`,
+`response_model`). Safe diagnostics never echo candidate or rejected provider text.
+
+The journal reader fails closed on corrupt JSON/UTF-8, duplicate keys, non-finite
+numbers, schema/sequence violations, and any unterminated final record. There is
+no automatic tail repair. One sequential writer per run is supported on local
+POSIX filesystems. Private modes reject group/other access and require sufficient
+owner capabilities. File and directory fsync accompany create-only manifest
+publication, directory creation, and initial journal creation; later appends
+fsync the journal. Uncertain writes poison the writer pending close/reopen and
+strict validation. Filesystem guarantees vary; there is no exactly-once inference
+or HTTP/filesystem transaction, and concurrent independent writers are unsupported.
+
 ---
 
 # 3. Variable extraction matrix

@@ -208,6 +208,22 @@ Execution results MUST be stored separately from cases and SHOULD contain at lea
 
 Input cases MUST NOT be overwritten by results.
 
+Stage 3C implements the raw transport-evidence subset of this eventual result
+view, without timestamps, parser output, scores, or reports. An explicitly
+supplied results root contains `<run_id>/manifest.json` and
+`<run_id>/journal.jsonl`. The immutable manifest uses only safe identity/config
+evidence; resume requires exact equality with an expected manifest rebuilt from
+authoritative inputs through public Stage 3A functions. It also requires the
+stored run ID to match the directory. Existing manifests are never rewritten.
+
+The private ignored journal preserves new candidate output exactly for later
+parsing/scoring, even when the candidate repeats private material. Historical
+request messages, baseline outputs, provenance payloads, endpoints, credentials,
+headers, and raw HTTP material are not duplicated into persistence. Provider
+finish reason/model metadata is retained only under the existing safe-label
+validators; rejected non-null values become null with field-name omission markers
+in fixed order: `finish_reason`, then `response_model`.
+
 ## 8. Variable extraction contract
 
 ### 8.1 Current production-shaped behavior
@@ -699,6 +715,29 @@ The benchmark runner MUST support:
 - aggregate report generation
 
 A failed request is a benchmark result, not something silently dropped.
+
+Stage 3C supplies persistence only; Stage 3D orchestration/retry policy remains
+unimplemented. Each returned `AttemptResult` must be durably appended as an
+`attempt` before the later runner decides retry/finalization. Per-execution
+`attempt_index` is contiguous from zero and separate from `repetition_index` and
+`ExecutionKey`. A `finalized` event references the latest attempt. Only finalized
+keys are completed, including finalized failures; unfinished evidence is retained.
+Persistence does not add new Stage 3B result cross-field invariants.
+
+Journal reading fails closed on corrupt framing, JSON/UTF-8/schema violations,
+duplicate keys, non-finite numbers, or invalid event sequences. Even valid JSON
+without a final newline is corruption. There is no automatic tail repair. All
+persistent outer JSON is standard JSON; parsed/scored structures remain deferred.
+
+The local POSIX implementation supports one sequential writer per run. It rejects
+group/other access and insufficient owner permissions, without requiring exact
+owner modes or changing existing permissions. Directory creation fsyncs its
+parent. Manifest publication uses a file-fsynced private temporary file and a
+create-only hard link, with run-directory fsync after publication and temporary
+name cleanup. Journal appends fsync the file and, on first creation, the run
+directory. Uncertain write/fsync failures poison the writer until close/reopen
+and strict reading. This does not guarantee exactly-once inference, HTTP/file
+transactionality, universal power-loss durability, or concurrent-writer safety.
 
 ## 17. Repetition and determinism
 
