@@ -538,3 +538,20 @@ Then Codex's first task should be **read-only planning only**:
 - make no edits.
 
 Only after that plan is reviewed should implementation begin.
+
+## Stage 4C1 evaluation interpretation
+
+Stage 4C1 implements scoped automatic evaluation, human-review checklists, and
+post-run reports for this unchanged inventory. Controls are evaluated separately:
+19 have fully automatic passing expectations; QA-026 additionally requires human
+confirmation that its fabricated claim is unsupported. All 20 bypass model calls,
+and CS-025 does not create an actual timeout.
+
+VM-021 remains unlabelled and excluded from binary accuracy/confusion denominators.
+QA precision/recall/F1 are annotation-scoped: unannotated vocabulary tags are
+reported for review, not silently labelled correct or false-positive. Sentence
+counts are reproducible diagnostics, while factual summaries and grounding retain
+explicit human review. NS-006's optionality distinctions remain required summary
+facts. Critical reports keep the 96 model cases separate from the four controls.
+No case inputs, gold, distribution, acceptance threshold, or dataset hash changed.
+The standalone HTTP test server and local E2E smoke remain Stage 4C2 work.

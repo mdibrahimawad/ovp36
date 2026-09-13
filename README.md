@@ -8,8 +8,10 @@ and a sequential prepared-request runner with frozen OVP-34 replay loading and
 plan preparation. Stage 4B1 adds source-aligned curated adapters, inventory
 validation, model-only plan preparation, and review projections. Stage 4B2 adds
 the fixed 126-case synthetic curated/adversarial inventory and its review projection. The literal fixtures and draft semantic annotations still
-require external human review before candidate runs. Scoring, reports, and serving
-remain unimplemented; no candidate evaluation has been run.
+require external human review before candidate runs. Stage 4C1 adds deterministic
+evaluation, separate controls, post-run reporting, and private human-review
+revisions. The localhost test server and HTTP E2E smoke remain Stage 4C2 work;
+no candidate evaluation has been run.
 
 OVP-36 has four product-level OOB areas: extraction, runtime context summary,
 voicemail, and post-call QA. The benchmark has six source-derived task contracts:
@@ -699,3 +701,97 @@ All helpers preserve `raw_response`, parser path, parsed/normalized values, and
 diagnostics. Blank input and raw fallback are not parse successes. Parseable
 output does not establish task schema or semantic correctness; `schema_valid`
 is nullable to distinguish unassessed output from an actual schema failure.
+
+## Stage 4C1: evaluation and review
+
+`evaluation.py` measures finalized completion evidence without calling a model.
+It reuses the production parsers and keeps strict format, recovered usability,
+structure, and semantic checks separate. There is no LLM/embedding judge, no
+candidate acceptance threshold, and no weighted cross-contract score.
+
+`evaluate_model_output(case, request=..., attempt=..., dataset_hash=...,
+evaluator_fingerprint=..., purpose=...)` accepts a prepared request and preserved
+`AttemptRecorded`. Purpose is `candidate` or `functional_stub`. The pure function
+assumes its caller has established finalization; use `reporting.evaluate_run()`
+for a journal-backed run. That public join verifies the expected manifest,
+dataset, original ordered plan, and execution references before evaluating only
+finalized attempts. Missing and unfinalized executions remain unavailable. It
+never sends, retries, finalizes, or repairs evidence.
+
+`evaluate_control_case(case, dataset_hash=..., evaluator_fingerprint=...)` handles
+all 20 non-model exercises without a client. Nineteen controls can pass fully
+automatically. QA-026 retains a pending human check confirming that the supplied
+hang-up-threat claim is unsupported. Its automatic semantic contradictions are
+negative-control evidence, not a candidate result. Control reports are separate
+from candidate metrics and from the 96 critical model cases.
+
+Automatic extraction comparisons are typed and exact; each missing-value policy
+is respected. Voicemail preserves source decision precedence. VM-021 remains
+unlabelled and outside binary metrics. QA precision/recall/F1 are explicitly
+**annotation-scoped**, with unannotated predictions and annotation coverage
+reported alongside them. Invalid/unavailable structured fields do not acquire
+correctness credit from production defaults. Metric records retain numerator and
+denominator; aggregate reports disclose unavailable records and pending review.
+Zero denominators produce null. QA score bands are case expectations only.
+
+Free-text facts, grounding, corrections, stale-current-state claims, and
+optionality produce `pass`, `fail`, `pending`, or `not_applicable` checks.
+`ScoreResult.status="complete"` means processing finished, even when checks fail.
+Summary categories reference existing facts without duplicating them. NS-006's
+optional actions remain required *summary distinctions*; they are not silently
+reclassified as safe to omit.
+
+`sentence_count_by_rule` counts nonempty spans separated by runs of `.`, `!`, or
+`?` before whitespace/end, with optional closing quotes/brackets, plus a trailing
+fragment. It does not split a decimal point without following whitespace. It can
+split abbreviations such as `Dr.`. `sentence_range_by_rule_ok` is therefore a
+format diagnostic, with a separate human sentence-compliance check: QS 3–5,
+NS 2–4, QA summary 1–2, and no runtime-summary sentence constraint.
+
+`build_human_review_items(case, evaluation, raw_output=...)` verifies the case and
+output fingerprints and resolves relevant local evidence. These are private
+transient views: output, questions, facts, and snippets are excluded from normal
+repr/serialization. They are not automatic artifacts or safe log messages.
+`ReviewDecision` stores only version, evaluation ID, check ID, status, and private
+notes; notes are hidden from repr. `apply_review_decisions()` returns a new view
+and rejects stale, unknown, duplicate, or automatic-check decisions.
+
+`aggregate_evaluations()` reports per-contract metrics, review coverage, and
+critical failures/pending checks, with controls and historical evidence kept
+separate. Historical replay has no semantic gold and receives only applicable
+availability, parsing, and structure measurements. Captured requests are never
+regenerated through adapters.
+
+Evaluation identity has its own schema/version domain and binds dataset, case,
+execution/attempt, privately hashed evidence, evaluator fingerprint, and purpose.
+The evaluator fingerprint is caller-supplied. For reproducibility, calculate it
+with `evaluation_fingerprint("implementation", components)`, where `components`
+is a mapping from repository-relative paths to SHA-256 file-byte digests of all
+`src/ovp36_benchmark/*.py`, `src/ovp36_benchmark/prompts/contracts.json`, and
+`uv.lock`. Tests use controlled synthetic digests. A changed implementation or
+review revision creates a new artifact; raw execution evidence stays unchanged.
+
+`write_evaluation_artifacts(results_root, evaluations=..., review_decisions=...)`
+publishes private create-only snapshots:
+
+```text
+results/<run_id>/evaluations/<batch_id>/automatic.jsonl
+results/<run_id>/evaluations/<batch_id>/summary-automatic.json
+results/<run_id>/evaluations/<batch_id>/reviews/<review_hash>.jsonl
+results/<run_id>/evaluations/<batch_id>/summary-<review_hash>.json
+results/control-evaluations/<batch_id>/...
+```
+
+Automatic rows contain only validated IDs, fingerprints, safe labels/statuses,
+finite measurements, and check results. Raw candidate text stays in the ignored
+journal; raw historical messages/outputs are not duplicated. Parser objects are
+not serialized wholesale. Review revisions are complete immutable decision sets,
+not another event journal. Omit `review_decisions` for automatic artifacts only;
+provide an empty sequence to publish an explicit empty revision.
+
+Publication requires private POSIX directories/files, rejects symlinks and
+insecure permissions, fsyncs before create-only publication and after directory
+changes, and reuses an existing file only on exact byte equality. Artifacts under
+`results/` remain ignored. `load_review_decisions()` reads strict finite JSONL and
+validates bindings. Neither evaluation nor publication prints private payloads.
+The existing client, runner, persistence, fixtures, and dependencies are unchanged.

@@ -1183,3 +1183,77 @@ The research phase is complete when:
 - failure cases are documented
 - a per-job candidate/keep-baseline recommendation is produced
 - claims are limited to what was actually measured
+
+## Stage 4C1 implemented evaluation boundary
+
+Stage 4C1 adds `evaluation.py` and `reporting.py`. The localhost deterministic
+server and real HTTP E2E smoke are Stage 4C2 work. No candidate run, model judge,
+acceptance threshold, hardware threshold, or weighted cross-contract score is
+introduced by this implementation.
+
+Execution stays separate from evaluation. `evaluate_run()` requires the original
+dataset and prepared plan plus expected-manifest equality, checks their identities,
+and reads the complete journal through public persistence readers. Only attempts
+referenced by finalization events are scored. Missing/unfinalized executions are
+reported unavailable. Corruption fails closed without partial results or repair.
+No request is sent, retried, or finalized by reporting. Historical requests remain
+on the captured path and have no inferred semantic gold.
+
+Strict JSON/format, production recovery/usability, structure, and semantics remain
+independent. Typed extraction comparison distinguishes bool from number, rejects
+non-finite numeric answers, respects per-field missing policy, and separates
+current from superseded values. Unusable extraction output earns no allowed-absence
+credit. Voicemail uses the unchanged source parser; unlabelled VM-021 never enters
+binary accuracy/confusion metrics. No-decision output on a completed labelled case
+is incorrect and contributes a false negative for its expected class.
+
+QA metrics use E (expected), F (forbidden), and P (distinct valid source-vocabulary
+predictions): TP=|P∩E|, FN=|E−P|, FP=|P∩F|. P−(E∪F) stays unannotated and reviewable.
+Precision/recall/F1 are explicitly annotation-scoped, with coverage and unannotated
+counts. Per-tag macro averages disclose how many tags have defined denominators.
+Unusable tags fields are excluded with unavailable counts; missing sentiment and
+invalid scores remain unavailable. Score distance is absolute error to a target or
+distance to an acceptable band, with valid-score coverage. Extra keys are
+reported diagnostically; defaults do not earn completeness credit.
+
+Required facts, critical facts, corrections, stale-current-state claims, forbidden
+claims, optional inclusion, and QA grounding produce explicit human checks. Safe
+omission is allowed; optional-behavior category references still identify required
+facts about optionality. Categories do not duplicate independent facts. The
+punctuation sentence rule documented in README is diagnostic only; source ranges
+are QS 3–5, NS 2–4, QA summary 1–2, with no runtime sentence range. No exact-string
+or substring semantic judge is used.
+
+Check states are pass/fail/pending/not_applicable. A complete ScoreResult means
+processing completed, not that an answer passed. Reports show per-contract metric
+numerators/denominators and unavailable/pending context; zero denominators are null.
+Human-check reports expose resolved pass rates alongside review coverage. Critical
+model and control counts, unique case IDs, failures, and still-pending checks are
+separate. A critical failure does not hide other pending checks.
+
+All 20 controls bypass the model runner. Adapter controls observe public adapter
+behavior, supplied-response controls use existing parsers, and CS-025 uses synthetic
+timeout evidence without sleeping. QA-026's automatic contradictions do not close
+its human grounding check: a control pass confirms detection of the unsupported
+claim, not approval of the supplied answer.
+
+Evaluation identities use a separate versioned hash domain over dataset/case,
+execution/attempt where applicable, an evidence fingerprint, evaluator version,
+evaluator fingerprint, and purpose. Evidence is hashed privately; raw payloads
+never enter automatic identity projections or artifacts. The caller-supplied
+implementation fingerprint policy is documented in README. Raw execution evidence
+is immutable and can be rescored under another evaluator identity.
+
+Private create-only evaluation batches contain automatic JSONL and aggregate JSON;
+complete immutable review revisions have their own JSONL hash and derived summary.
+They do not create another append-only journal. Review decisions cannot overwrite
+automatic checks. Private transient review views resolve candidate text and evidence
+locally; ordinary repr/serialization excludes these fields. Private review notes do
+not appear in aggregate summaries. Artifacts use finite standard JSON; production
+parser support for non-finite raw content remains unchanged in the journal.
+
+Publication rejects symlinks/insecure permissions, uses private files and
+directories, fsyncs before atomic create-only publication and after directory
+changes, and never overwrites differing content. Existing identical artifacts may
+be reused after exact comparison. Unexpected harness bugs remain exceptions rather
+than candidate failures. The protected execution modules and dataset are unchanged.
