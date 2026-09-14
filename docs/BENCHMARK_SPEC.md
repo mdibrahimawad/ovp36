@@ -1299,3 +1299,57 @@ temporary directories and are removed. No real model, external network, or
 candidate benchmark is involved. Local client-observed latency is functional
 evidence only, not representative latency, throughput, or hardware performance.
 Dataset annotations, evaluation policy, and dependencies are unchanged.
+
+## Stage 5B local candidate-smoke orchestration
+
+`python -m ovp36_benchmark candidate-smoke --config candidate.local.toml
+--results-root results` is the supported source-checkout command for the first
+real local candidate smoke. It does not select, download, or serve a model.
+`candidate_smoke` is an explicit model-evaluation purpose, separate from
+`functional_stub`, full `candidate` evaluations, and `control`. Existing purpose
+validation remains closed; purpose continues to bind evaluation identity and
+separate reporting groups. Scoring and human-review policy are unchanged.
+
+The command loads the existing configuration unchanged, requires exploratory
+designation, one repetition, concurrency one, and a `candidate-smoke` experiment
+label (optionally followed by a hyphen and a distinguishing suffix). Before client
+construction, the resolved endpoint must be numeric IPv4 loopback HTTP with an
+explicit valid port and `/v1` path, optionally ending in `/`. Hostnames, other
+addresses, HTTPS, credentials in URLs, queries, and fragments are rejected without
+DNS. No global socket interception is introduced.
+
+Public dataset validation and hashing check the full frozen curated inventory.
+Only curated-ex-001, curated-cs-002, curated-vm-001, curated-qa-001, curated-qs-001,
+and adversarial-ns-006 enter the canonical six-entry plan. Controls and historical
+replay are excluded from execution and evaluation. Full dataset identity and the
+selected plan identity remain separate. All requests preserve the configured
+generation object; no universal token limit or per-contract override is imposed.
+
+Actual file-byte digests feed the documented public implementation fingerprint
+policy in README, used for both harness and evaluator identity. Dependency-lock,
+contract, dataset, and plan identity use actual bytes/public helpers. Existing
+manifest fields bind configured safe model identity, alias, settings, and declared
+server metadata without endpoint URLs, private paths, or credentials.
+
+The unchanged runner creates private immutable manifest/journal evidence with
+one attempt per fresh execution and no automatic retries. Evaluation and existing
+report publication follow, with purpose `candidate_smoke`. Human checks remain
+pending; no interactive review, fake decisions, LLM judge, thresholds, or combined
+score are introduced. Normally journaled failures and poor candidate quality do
+not make successful orchestration exit nonzero. Invalid arguments/configuration,
+invariants, and unexpected harness failures do. Console output is restricted to
+safe IDs, labels, status counts, and pending-review counts, never raw payloads.
+
+Results default to ignored `results/`; custom roots inside the checkout must stay
+under that tree, while external private roots are supported. Symlinks are rejected;
+existing persistence/reporting enforce private permissions and immutable artifacts.
+Resume retains existing evidence and skips finalized executions, including failed
+ones. A deliberate new run requires a distinct declared identity, such as a new
+smoke experiment label, rather than deleting old evidence or changing only a URL.
+
+Local Mac smoke can establish API/parser compatibility, basic functional behavior,
+evaluation plumbing, human-review workflow, and obvious failures. It cannot
+establish GB10 latency, production p95, throughput/jobs per second, GPU memory
+sizing, dialogue/TTS coexistence, contention reduction, or capacity planning.
+Model and serving-technology selection remain separate; this stage runs no real
+candidate and adds no model-specific configuration or dependency.

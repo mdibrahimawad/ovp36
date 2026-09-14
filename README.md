@@ -11,7 +11,9 @@ the fixed 126-case synthetic curated/adversarial inventory and its review projec
 require external human review before candidate runs. Stage 4C1 adds deterministic
 evaluation, separate controls, post-run reporting, and private human-review
 revisions. Stage 4C2 adds a deterministic localhost HTTP server and real
-AsyncOpenAI E2E smoke. No candidate evaluation has been run.
+AsyncOpenAI E2E smoke. Stage 5B adds the model-agnostic `candidate-smoke` operator
+command and distinct `candidate_smoke` evaluation purpose. No real candidate
+evaluation has been run.
 
 OVP-36 has four product-level OOB areas: extraction, runtime context summary,
 voicemail, and post-call QA. The benchmark has six source-derived task contracts:
@@ -260,7 +262,9 @@ tracked private-data validation script or CLI is required.
 
 ## Configuration
 
-This example describes the schema; there is no benchmark CLI or dataset-to-runner wiring yet:
+This example describes the general configuration schema. Dataset-to-runner APIs
+exist; Stage 5B adds only the narrow `candidate-smoke` command documented below,
+not a general benchmark CLI. The example's settings are not candidate policy.
 
 ```toml
 experiment_label = "local-development"
@@ -712,7 +716,8 @@ candidate acceptance threshold, and no weighted cross-contract score.
 
 `evaluate_model_output(case, request=..., attempt=..., dataset_hash=...,
 evaluator_fingerprint=..., purpose=...)` accepts a prepared request and preserved
-`AttemptRecorded`. Purpose is `candidate` or `functional_stub`. The pure function
+`AttemptRecorded`. Model purpose is `candidate`, `candidate_smoke`, or
+`functional_stub`. The pure function
 assumes its caller has established finalization; use `reporting.evaluate_run()`
 for a journal-backed run. That public join verifies the expected manifest,
 dataset, original ordered plan, and execution references before evaluating only
@@ -838,3 +843,95 @@ Run just this boundary with:
 ```sh
 .venv/bin/python -m unittest discover -s tests -p test_local_e2e.py -v
 ```
+
+## Stage 5B: local candidate-smoke command
+
+From this source checkout, after separately selecting and starting an approved
+local model server:
+
+```sh
+.venv/bin/python -m ovp36_benchmark candidate-smoke \
+  --config candidate.local.toml \
+  --results-root results
+```
+
+The command neither chooses nor starts a model. It reuses `load_config()`,
+`resolve_endpoint()`, `prepare_curated_plan()`, `build_manifest()`, `ModelClient`,
+`run_plan()`, `evaluate_run()`, aggregation, and artifact publication. No new
+dependency or serving-framework integration is required.
+
+Use the existing TOML schema with `evaluation="exploratory"`, `repetitions=1`,
+`concurrency=1`, and an `experiment_label` equal to `candidate-smoke` or beginning
+with `candidate-smoke-`. In the general example above, replace the experiment
+label and choose generation settings for the separately approved model/server;
+no token value in that example is imposed by the command. Endpoint/model values
+resolve from their configured environment references (for example
+`OVP36_BASE_URL` and `OVP36_MODEL`). If authentication is needed, reference the
+key through `api_key_env`; never put it in TOML or the URL. Keep the four guarded
+SDK settings `OPENAI_CUSTOM_HEADERS`, `OPENAI_ORG_ID`, `OPENAI_PROJECT_ID`, and
+`OPENAI_LOG` absent. Client defaults already disable environment proxies and
+redirects.
+
+Before constructing the client, the command requires
+`http://127.0.0.1:<port>/v1` (an optional final slash is accepted). The port must
+be explicit and nonzero. Hostnames, other addresses, HTTPS, embedded credentials,
+queries, fragments, and the full completion route are rejected without DNS or
+network access. The SDK appends `/chat/completions`. There is no production socket
+monkeypatch: stronger socket/DNS guards remain test-only.
+
+The full frozen 126-case dataset is validated and hashed, but only these six model
+cases enter the plan, in canonical order:
+
+```text
+curated-ex-001
+curated-cs-002
+curated-vm-001
+curated-qa-001
+curated-qs-001
+adversarial-ns-006
+```
+
+Controls and historical replay are not dispatched or evaluated by this command.
+One configured generation object is preserved for all six requests, including
+the selected token-limit field, temperature, top_p, and optional seed. No per-task
+overrides or model-optimal defaults are added. Stream remains false.
+
+Actual repository bytes supply identity. The command builds the documented
+`evaluation_fingerprint("implementation", components)` over all package Python
+files, prompt contracts, and `uv.lock`, and uses it for both harness and evaluator
+identity. The lock fingerprint is its SHA-256 file-byte digest; contract, dataset,
+and plan hashes use existing public helpers. The full dataset hash and six-entry
+plan hash bind the manifest, along with configured safe model identity, endpoint
+alias, settings, and declared server metadata. No URL or credential is added to
+identity. Model selection and accurate server/checkpoint declarations remain
+operator responsibilities; no files should change during a run.
+
+`--results-root` defaults to `results`. Inside the checkout, the command permits
+only the existing ignored `results/` tree; external private directories are also
+accepted. Symlink paths are rejected. Existing persistence enforces private
+permissions and immutable manifests/journals; reporting writes the existing
+automatic artifacts below the run. Config files ending in `.local.toml` and the
+default results tree remain ignored. Do not commit private artifacts.
+
+Evaluations use `purpose="candidate_smoke"`, distinct in identity and reporting
+from `functional_stub`, full `candidate` evaluations, and controls. Semantic facts
+and grounding remain pending human checks. The command does not interactively
+review, create review decisions, judge with a model, or add quality thresholds.
+Its console output contains only run ID, purpose, counts, safe contract/status
+labels, and pending human-review counts; it does not print payloads, endpoints,
+keys, or paths. Locate artifacts under the supplied results root and printed run ID.
+
+Invalid arguments exit 2; configuration/invariant/harness failures exit nonzero
+with safe codes. Successfully published evaluations exit 0 even for poor quality,
+pending reviews, or normally journaled HTTP/transport/timeout/protocol failures.
+There are no retries. Resume skips finalized executions, including failures, and
+finalizes one unfinished attempt without resending. Inspect evidence before a
+deliberate rerun; use a distinct smoke experiment label for a new run and retain
+old artifacts. Changing only the URL does not create a new run identity.
+
+Local smoke establishes request/response and parser compatibility, basic
+functional behavior, automatic evaluation plumbing, human-review workflow, and
+obvious catastrophic failures. It does not establish GB10 latency, production p95,
+throughput/jobs per second, GPU memory sizing, dialogue/TTS coexistence, contention
+reduction, or capacity planning. Local client latency is evidence of functional
+execution only, not representative benchmark performance.

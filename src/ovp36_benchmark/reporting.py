@@ -26,7 +26,7 @@ def evaluate_run(dataset, *, plan, results_root, expected_manifest, evaluator_fi
                  purpose) -> tuple[CaseEvaluation, ...]:
     """Join the full original plan to a strict journal snapshot, without mutations."""
     manifest = checked(RunManifest, expected_manifest)
-    if purpose not in ("candidate", "functional_stub"):
+    if purpose not in ("candidate", "candidate_smoke", "functional_stub"):
         raise EvaluationError("invalid_evaluation_purpose")
     if load_manifest(results_root, manifest.run_id) != manifest:
         raise EvaluationError("evaluation_manifest_mismatch")

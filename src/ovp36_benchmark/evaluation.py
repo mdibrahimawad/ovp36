@@ -98,7 +98,7 @@ class CaseEvaluation(StrictModel):
     contract_id: SafeIdentifier
     source: Source
     exercise_kind: Literal["model", "adapter_control", "response_contract", "transport_contract"]
-    purpose: Literal["candidate", "functional_stub", "control"]
+    purpose: Literal["candidate", "candidate_smoke", "functional_stub", "control"]
     critical: bool
     gold_available: bool
     execution_key: ExecutionKey | None = None
@@ -486,7 +486,7 @@ def evaluate_model_output(case, *, request: PreparedRequest, attempt: AttemptRec
                           execution_key: ExecutionKey | None = None, execution_state: str = "finalized") -> CaseEvaluation:
     """Effect-free evaluation. Caller proves finalization; evaluate_run does so publicly."""
     data = _case_data(case)
-    if data["exercise_kind"] != "model" or purpose not in ("candidate", "functional_stub"):
+    if data["exercise_kind"] != "model" or purpose not in ("candidate", "candidate_smoke", "functional_stub"):
         raise EvaluationError("model_evaluation_required")
     if not isinstance(request, PreparedRequest):
         raise EvaluationError("prepared_request_required")
