@@ -1,4 +1,4 @@
-"""Candidate-smoke purpose and command composition; synthetic guarded HTTP only."""
+"""Curated candidate CLI composition; synthetic guarded or in-memory HTTP only."""
 
 from contextlib import ExitStack, redirect_stderr, redirect_stdout
 import hashlib
@@ -7,14 +7,18 @@ import json
 import logging
 import os
 from pathlib import Path
+import shutil
 import tempfile
+from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
 
+import httpx
 from pydantic import ValidationError
 
 from ovp36_benchmark import __main__ as cli
 from ovp36_benchmark.adapters import prepare_curated_plan
+from ovp36_benchmark.client import ModelClient
 from ovp36_benchmark.config import load_config
 from ovp36_benchmark.dataset import hash_dataset, load_curated_cases
 from ovp36_benchmark.evaluation import CaseEvaluation, EvaluationError, evaluate_model_output, evaluation_fingerprint
@@ -320,6 +324,141 @@ class CandidateSmokeCLITests(unittest.TestCase):
             self.assertTrue(any(c.status == "fail" for c in rows[0].checks))
             self.assertGreater(summary["pending_human_review_checks"], 0)
         self.assertFalse(server._thread.is_alive())
+
+    def test_suite_inspection_does_not_construct_client_or_run(self):
+        with patch.object(cli, "ModelClient") as client, patch.object(cli, "run_plan") as runner:
+            args = cli._arguments(["candidate-suite", "--config", "unused"])
+            self.assertEqual((args.command, args.results_root), ("candidate-suite", "results"))
+            code, output, errors = self.invoke(["candidate-suite", "--help"])
+            self.assertEqual(code, 0)
+            self.assertIn("candidate-suite", output)
+            self.assertEqual(errors, "")
+            for flag in ("--source", "--selection"):
+                self.assertEqual(self.invoke(["candidate-suite", "--config", "unused", flag, "private"])[0], 2)
+            client.assert_not_called()
+            runner.assert_not_called()
+        self.assertFalse(self.results.exists())
+
+    def test_suite_full_validation_and_hash_precede_plan(self):
+        self.config()
+        args = ["candidate-suite", "--config", str(self.config_path), "--results-root", str(self.results)]
+        fixtures = self.root / "synthetic-fixture-copy"
+        shutil.copytree(cli.REPOSITORY_ROOT / "data/curated", fixtures)
+        control = next(c for c in self.cases if c.exercise.kind != "model")
+        path = fixtures / (control.task.value + ".jsonl")
+        rows = [json.loads(line) for line in path.read_text().splitlines()]
+        # Corruption in a control must be rejected, even though it cannot be sent.
+        next(r for r in rows if r["id"] == control.id)["unexpected_field"] = True
+        path.write_text("".join(json.dumps(r) + "\n" for r in rows))
+        self.assertEqual(len(self.cases), 126)
+        with patch.object(cli, "prepare_curated_plan") as planner, patch.object(cli, "ModelClient") as client:
+            with patch.object(cli, "load_curated_cases", side_effect=lambda _: load_curated_cases(fixtures)):
+                self.assertEqual(self.invoke(args)[0], 1)
+            with patch.object(cli, "hash_dataset", return_value="0" * 64):
+                code, _, errors = self.invoke(args)
+                self.assertEqual(code, 1)
+                self.assertIn("frozen_dataset_mismatch", errors)
+            planner.assert_not_called()
+            client.assert_not_called()
+        self.assertFalse(self.results.exists())
+
+    def test_suite_plan_requires_106_ordered_model_ids_before_client(self):
+        cfg = self.config()
+        args = ["candidate-suite", "--config", str(self.config_path), "--results-root", str(self.results)]
+        plan = prepare_curated_plan(self.cases, config=cfg, resolved_model=MODEL)
+        control = next(c for c in self.cases if c.exercise.kind != "model")
+        injected = SimpleNamespace(request=SimpleNamespace(case_id=control.id), repetition_index=0)
+        with patch.object(cli, "ModelClient") as client:
+            for bad_plan in (plan[:-1], plan + (plan[0],), plan[::-1], (injected,) + plan[1:]):
+                with patch.object(cli, "prepare_curated_plan", return_value=bad_plan):
+                    code, _, errors = self.invoke(args)
+                    self.assertEqual(code, 1)
+                    self.assertIn("full_suite_execution_plan_required", errors)
+            with patch.object(cli, "load_curated_cases", return_value=self.cases[:-1]), \
+                 patch.object(cli, "hash_dataset", return_value=cli.FROZEN_DATASET_HASH):
+                self.assertIn("full_suite_inventory_required", self.invoke(args)[2])
+            client.assert_not_called()
+        self.assertFalse(self.results.exists())
+
+    def test_suite_mock_execution_controls_purpose_resume_and_six_case_smoke(self):
+        cfg = self.config()
+        config_bytes = self.config_path.read_bytes()
+        model_cases = tuple(c for c in self.cases if c.exercise.kind == "model")
+        control_ids = {c.id for c in self.cases if c.exercise.kind != "model"}
+        plan = prepare_curated_plan(self.cases, config=cfg, resolved_model=MODEL)
+        self.assertEqual((len(plan), len(control_ids)), (106, 20))
+        received = []
+        def response(request):
+            received.append(json.loads(request.content))
+            # Deliberately imperfect, entirely synthetic completion; no model.
+            return httpx.Response(200, json=envelope("{}"))
+        def client(endpoint, **kwargs):
+            return ModelClient(endpoint, **kwargs, transport=httpx.MockTransport(response))
+        args = ["candidate-suite", "--config", str(self.config_path), "--results-root", str(self.results)]
+        with patch.object(cli, "ModelClient", side_effect=client), \
+             patch.object(cli, "prepare_curated_plan", wraps=prepare_curated_plan) as planner, \
+             patch.object(cli, "evaluate_control_case", wraps=cli.evaluate_control_case) as control_eval:
+            code, output, errors = self.invoke(args)
+            self.assertEqual((code, errors), (0, ""))
+            self.assert_safe(output)
+            self.assertEqual(planner.call_args.args[0], self.cases)
+            self.assertEqual({call.args[0].id for call in control_eval.call_args_list}, control_ids)
+            self.assertEqual(control_eval.call_count, 20)
+            self.assertEqual(received, [p.request.to_request_body() for p in plan])
+            summary = json.loads(output)
+            self.assertEqual(summary["purpose"], "candidate")
+            self.assertEqual((summary["selected_case_count"], summary["execution"]["planned"],
+                              summary["execution"]["attempts_sent"], summary["evaluation_count"],
+                              summary["control_evaluation_count"]), (106, 106, 106, 106, 20))
+            self.assertGreater(summary["pending_human_review_checks"], 0)
+            self.assertGreater(summary["pending_control_human_review_checks"], 0)
+            self.assertEqual({k: v["selected"] for k, v in summary["controls"].items()},
+                             dict(adapter_control=7, response_contract=12, transport_contract=1))
+            expected_counts = dict(extraction=19, context_summary=21, voicemail=23, qa=27,
+                                   qa_conversation_summary=10, qa_node_summary=6)
+            self.assertEqual({k: v["selected"] for k, v in summary["contracts"].items()},
+                             {"candidate:synthetic:" + k: v for k, v in expected_counts.items()})
+            run_id = summary["run_id"]
+            events = read_events(self.results, run_id)
+            self.assertEqual(len(events), 212)
+            self.assertEqual(tuple(e.execution_key.case_id for e in events[::2]), tuple(c.id for c in model_cases))
+            self.assertTrue(control_ids.isdisjoint(e.execution_key.case_id for e in events))
+            manifest = load_manifest(self.results, run_id)
+            self.assertEqual(manifest.dataset_hash, cli.FROZEN_DATASET_HASH)
+            self.assertEqual(manifest.safe_config.generation, cfg.generation)
+            automatic, = (self.results / run_id / "evaluations").glob("*/automatic.jsonl")
+            models = [CaseEvaluation.model_validate_json(line) for line in automatic.read_bytes().splitlines()]
+            controls_path, = (self.results / "control-evaluations").glob("*/automatic.jsonl")
+            controls = [CaseEvaluation.model_validate_json(line) for line in controls_path.read_bytes().splitlines()]
+            self.assertEqual((len(models), len(controls)), (106, 20))
+            self.assertTrue(all(r.purpose == "candidate" and r.exercise_kind == "model" for r in models))
+            self.assertTrue(all(r.purpose == "control" and r.execution_key is None for r in controls))
+            self.assertTrue(all(c.status == "pending" for row in models + controls
+                                for c in row.checks if c.method == "human"))
+            model_report = json.loads((automatic.parent / "summary-automatic.json").read_bytes())
+            control_report = json.loads((controls_path.parent / "summary-automatic.json").read_bytes())
+            self.assertEqual(sum(v["selected"] for v in model_report["contracts"].values()), 106)
+            self.assertEqual(sum(v["selected"] for v in model_report["controls"].values()), 0)
+            self.assertEqual(control_report["contracts"], {})
+
+            before = {p: p.read_bytes() for p in self.results.rglob("*") if p.is_file()}
+            code, output, errors = self.invoke(args)
+            self.assertEqual((code, errors), (0, ""))
+            self.assertEqual(json.loads(output)["execution"]["skipped_completed"], 106)
+            self.assertEqual(json.loads(output)["execution"]["attempts_sent"], 0)
+            self.assertEqual(len(received), 106)
+            self.assertEqual(before, {p: p.read_bytes() for p in self.results.rglob("*") if p.is_file()})
+
+            control_eval.reset_mock()
+            code, output, errors = self.invoke()
+            self.assertEqual((code, errors), (0, ""))
+            smoke = json.loads(output)
+            self.assertEqual((smoke["purpose"], smoke["execution"]["attempts_sent"]), ("candidate_smoke", 6))
+            self.assertEqual(tuple(c.id for c in planner.call_args.args[0]), SMOKE_IDS)
+            self.assertEqual(len(received), 112)
+            self.assertNotIn("control_evaluation_count", smoke)
+            control_eval.assert_not_called()
+        self.assertEqual(self.config_path.read_bytes(), config_bytes)
 
 
 if __name__ == "__main__":

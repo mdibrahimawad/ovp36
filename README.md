@@ -7,13 +7,16 @@ one-shot AsyncOpenAI client, immutable run manifests, private result journals,
 and a sequential prepared-request runner with frozen OVP-34 replay loading and
 plan preparation. Stage 4B1 adds source-aligned curated adapters, inventory
 validation, model-only plan preparation, and review projections. Stage 4B2 adds
-the fixed 126-case synthetic curated/adversarial inventory and its review projection. The literal fixtures and draft semantic annotations still
-require external human review before candidate runs. Stage 4C1 adds deterministic
+the fixed 126-case synthetic curated/adversarial inventory and its review projection.
+The literal fixtures and draft semantic annotations retain their external human-review
+requirements; exploratory candidate runs do not constitute approval. Stage 4C1 adds deterministic
 evaluation, separate controls, post-run reporting, and private human-review
 revisions. Stage 4C2 adds a deterministic localhost HTTP server and real
 AsyncOpenAI E2E smoke. Stage 5B adds the model-agnostic `candidate-smoke` operator
-command and distinct `candidate_smoke` evaluation purpose. No real candidate
-evaluation has been run.
+command and distinct `candidate_smoke` evaluation purpose. Local Granite candidate
+evaluation has now run, including the 106 model-case curated suite and a separate
+ten-case historical QA comparison. Private results remain ignored; these local
+research runs do not establish production readiness or GB10 performance.
 
 OVP-36 has four product-level OOB areas: extraction, runtime context summary,
 voicemail, and post-call QA. The benchmark has six source-derived task contracts:
@@ -935,3 +938,153 @@ obvious catastrophic failures. It does not establish GB10 latency, production p9
 throughput/jobs per second, GPU memory sizing, dialogue/TTS coexistence, contention
 reduction, or capacity planning. Local client latency is evidence of functional
 execution only, not representative benchmark performance.
+
+## Private ten-case historical QA comparison
+
+`qa-replay-compare` uses the same private TOML, explicit loopback endpoint,
+configured model/generation settings, and sequential runner as `candidate-smoke`.
+It neither starts a server nor selects a model. With the approved local server
+running and the configuration's `OVP36_BASE_URL` and `OVP36_MODEL` variables set:
+
+```sh
+.venv/bin/python -m ovp36_benchmark qa-replay-compare \
+  --config candidate.local.toml \
+  --source "$OVP34_RAW_OBSERVATIONS" \
+  --selection "$OVP34_OOB_SELECTION" \
+  --results-root results
+```
+
+Set the two artifact variables to the private canonical final-100 observations
+JSONL and `oob_jobs.csv`. No historical payload or machine-specific path belongs
+in tracked `data/`. This command first calls the existing `load_ovp34_replay()`
+on the **full 242-case dataset**, then checks both exact file-byte hashes frozen
+in `SOURCE_AUDIT.md` §1.2. Only after that does it select the ten observation IDs
+in `qa_replay_comparison.QA_OBSERVATION_IDS`, retaining CSV order. There is no
+checksum bypass or alternate loader. A second, hash-verified raw-file pass joins
+each historical `qwen3.5` output from `raw.output.content` by observation ID.
+
+`prepare_replay_plan()` sends captured messages directly, including their
+already-rendered prompts; curated adapters are never involved. The full dataset
+hash binds the manifest; the ten selected executions bind the plan hash. Candidate
+settings replace historical generation settings, without rewriting messages.
+Keep the smoke config's exploratory designation, one repetition, concurrency one,
+and `candidate-smoke` experiment-label convention. The different dataset/plan
+already separates this run from the six curated smoke cases. Use a new experiment
+label for a deliberate rerun; existing finalized successes and failures resume
+without another model call.
+
+Existing manifest, journal, and automatic evaluations remain under
+`results/<run_id>/`. Additional private, immutable files are published at:
+
+```text
+results/<run_id>/qa-comparison/<observation_id>.json
+```
+
+These explicitly private reports include captured messages, exact baseline and
+candidate raw text, parsed results, tags (including reasons), sentiments, scores,
+summaries, tag intersections/differences, sentiment agreement, absolute score
+differences, parser/strict-format status, and journaled transport/model metadata.
+They include execution identity and both source artifact hashes. Qwen is labeled
+`historical_baseline`; agreement is diagnostic, not correctness, gold, an LLM
+judgment, or a global semantic score. Existing evaluation utilities report
+candidate structure without inventing historical gold.
+
+Direct and fenced JSON use the existing production-compatible QA parser, with
+strict-format assessment kept separate. Unavailable/invalid comparison fields
+produce `null` differences rather than false agreement or zero error. Tags are
+compared by exact tag string as sets; order, duplicate count, and reasons remain
+in each side's raw/parsed evidence. Scores must be finite numbers in 1–10, excluding
+booleans. Production non-finite JSON extensions remain intact in raw text; parsed
+results containing them are explicitly marked omitted from the strict JSON
+projection, with affected extracted fields listed in `omitted_nonfinite_fields`.
+
+The existing private POSIX publisher enforces directories with no group/other
+access, private files, symlink rejection, fsync, and create-only publication.
+Keep all these reports local and ignored. Historical payloads are not copied into
+manifests, journals, or ordinary automatic evaluations. Console output contains
+only run identity, labels, and counts. The command does not tune token limits or
+timeouts: inspect finish reasons and errors before interpreting comparisons.
+Local execution does not establish GB10/DGX performance.
+
+## Full curated/adversarial candidate suite
+
+After separately starting the approved local server, explicitly invoke:
+
+```sh
+OVP36_BASE_URL='http://127.0.0.1:8080/v1' \
+OVP36_MODEL='mlx-community/granite-4.0-h-tiny-8bit' \
+.venv/bin/python -m ovp36_benchmark candidate-suite \
+  --config candidate.local.toml \
+  --results-root results
+```
+
+`candidate-suite` shares curated orchestration with `candidate-smoke`. It loads
+and validates all 126 frozen cases, verifies the existing dataset hash, and passes
+the full dataset to `prepare_curated_plan()`. Before client construction it requires
+exactly the 106 model-case IDs, in canonical order, with repetition index zero.
+The plan contains 19 extraction, 21 context-summary, 23 voicemail, 27 QA evaluation,
+10 QA conversation-summary, and 6 QA node-summary requests. The six-case smoke
+selection and its behavior remain unchanged.
+
+The existing local configuration rules apply: explicit numeric loopback endpoint,
+one repetition, concurrency one, exploratory configuration, and the existing
+`candidate-smoke` experiment-label convention. The command preserves every
+configured generation/timeout setting, including the chosen token-limit field.
+It does not start a server or adjust the model. Evaluation uses `purpose="candidate"`;
+the configuration's exploratory designation remains unchanged. The full 106-entry
+plan distinguishes its run identity from the six-case smoke. Existing manifest,
+client, sequential runner, journal, and resume behavior are reused. A fresh run
+sends 106 requests; resume skips finalized executions, including failures.
+
+The 20 controls (7 adapter, 12 response-contract, 1 transport-contract) are evaluated
+locally with `evaluate_control_case()`. They never enter candidate inference or
+candidate quality/latency denominators. Model and control evaluations are published
+as separate batches using the existing private artifact writer:
+
+```text
+results/<run_id>/manifest.json
+results/<run_id>/journal.jsonl
+results/<run_id>/evaluations/<batch_id>/automatic.jsonl
+results/<run_id>/evaluations/<batch_id>/summary-automatic.json
+results/control-evaluations/<control_batch_id>/automatic.jsonl
+results/control-evaluations/<control_batch_id>/summary-automatic.json
+```
+
+Automatic metrics remain separated by task contract. Human checks remain pending,
+including the existing negative-grounding control. Console output reports model
+execution counts, per-contract transport counts, separate control outcomes, and
+separate pending human-review counts. No LLM judge, global cross-task quality score,
+or routing recommendation is added. Help/argument inspection does not execute
+models. Tests exercise the command using synthetic responses and temporary results.
+
+## Private sequential model comparison
+
+The local operator script composes the existing smoke, suite, and ten-case replay
+commands without changing their datasets, prompts, parsers, scoring, or journals:
+
+```bash
+.venv/bin/python scripts/compare_candidates.py run \
+  --batch private/model-comparison-20260916
+```
+
+The ignored batch directory holds the pinned `models.json`, `freeze.json`,
+per-model artifact checksums/native templates, local configurations, startup
+probes, sampled server RSS, raw HTTP sidecars, and `progress.json`. It requires
+the existing private canonical replay inputs and a separate installed MLX runtime.
+Only one owned loopback server is loaded at a time. Completed phases are reused;
+the existing immutable journal handles interrupted request execution. Blocked
+models remain explicit and do not prevent subsequent independent candidates.
+No model requests are made on script import. Download/probe/startup activity is
+outside the benchmark's request latency measurements.
+
+For Gemma with MLX-LM 0.31.3, the wrapper removes only the checkpoint's unused
+shared-KV projection/norm tensors, matching Transformers' Gemma loader policy.
+All remaining weights still undergo strict native loading. This compatibility
+step and discarded tensor names are recorded privately; source weights are never
+rewritten. Native text-only loading excludes vision/audio modules.
+
+AI reviews are separate private evidence sidecars, not human approval records.
+`scripts/review_candidates.py` only validates identities, output hashes, exact
+quoted evidence, and coverage; it does not produce semantic judgments or call a
+judge. Run it with the benchmark Python to list outstanding full-suite/replay
+reviews. Human-review requirements and all automatic results remain intact.
